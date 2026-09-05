@@ -28,6 +28,7 @@ python -m venv .venv
 | Split train/val | `python prepare_dataset.py` |
 | Training (±1 menit di GPU) | `python train_fullness_classifier.py --data_dir ./dataset --epochs 15` |
 | Prediksi | `python predict.py --image foto.jpg` |
+| **Analisis antrian lengkap** (YOLO + classifier + estimasi tunggu) | `python detect_queue.py --image examples/antrian_cctv.jpg` |
 | Simulasi online learning | `python online_learning_simulation.py` |
 
 Foto dimasukkan ke `dataset/raw/{empty,light,medium,full,no_basket_with_items}/`
@@ -37,4 +38,5 @@ Foto dimasukkan ke `dataset/raw/{empty,light,medium,full,no_basket_with_items}/`
 
 - ✅ Basket fullness classifier (MobileNetV2 transfer learning, 9.2 MB, 5.6 ms/gambar di GTX 1050 Ti)
 - ✅ Prediksi waktu checkout — online linear regression, akurasi 74%→88% dalam 120 transaksi simulasi
-- ⬜ Person/basket detection (YOLO pretrained) · dashboard Next.js + Supabase · LED ESP32
+- ✅ Person detection + skor antrian (`detect_queue.py`): YOLOv8n pretrained → crop area bawaan per orang → fullness → estimasi tunggu → status lane 🟢🟡🔴
+- ⬜ Fine-tune basket detector (30-50 foto) · queue zone + tracking (ByteTrack) · dashboard Next.js + Supabase · LED ESP32
