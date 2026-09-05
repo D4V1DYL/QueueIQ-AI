@@ -29,6 +29,7 @@ python -m venv .venv
 | Training (±1 menit di GPU) | `python train_fullness_classifier.py --data_dir ./dataset --epochs 15` |
 | Prediksi | `python predict.py --image foto.jpg` |
 | **Analisis antrian lengkap** (YOLO + classifier + estimasi tunggu) | `python detect_queue.py --image examples/antrian_cctv.jpg` |
+| — dengan zona antrian (hanya hitung orang di polygon) | `python detect_queue.py --image cctv.jpg --zone "130,40 330,40 330,330 130,330"` |
 | Simulasi online learning | `python online_learning_simulation.py` |
 
 Foto dimasukkan ke `dataset/raw/{empty,light,medium,full,no_basket_with_items}/`
@@ -40,4 +41,5 @@ Foto dimasukkan ke `dataset/raw/{empty,light,medium,full,no_basket_with_items}/`
 - ✅ Prediksi waktu checkout — online linear regression, akurasi 74%→88% dalam 120 transaksi simulasi
 - ✅ Person detection + skor antrian (`detect_queue.py`): YOLOv8n pretrained → crop area bawaan per orang → fullness → estimasi tunggu → status lane 🟢🟡🔴
 - ✅ Basket detector fine-tuned (`finetune_basket_detector.py`): auto-label YOLO-World (zero-shot, tanpa anotasi manual) → fine-tune YOLOv8n — mAP50 0.887, precision 0.93; `detect_queue.py` otomatis memakainya bila `basket_detector.pt` ada
-- ⬜ Queue zone + tracking (ByteTrack) · dashboard Next.js + Supabase · LED ESP32
+- ✅ Queue zone (`--zone`): hanya orang/keranjang di polygon area antrian yang dihitung — kasir & pengunjung lewat tersaring
+- ⬜ Tracking antar-frame (ByteTrack) · dashboard Next.js + Supabase · LED ESP32

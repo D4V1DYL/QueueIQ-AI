@@ -16,6 +16,8 @@ CARA PAKAI:
     python detect_queue.py --image dataset/unsorted/          (semua foto folder)
     python detect_queue.py --video rekaman.mp4                (proses per detik)
     python detect_queue.py --image foto.jpg --no-annotate     (tanpa simpan gambar)
+    python detect_queue.py --image cctv.jpg --zone "130,40 330,40 330,330 130,330"
+        (hanya hitung orang di dalam polygon area antrian; titik = piksel x,y)
 
 Output: ringkasan antrian di terminal + gambar beranotasi *_annotated.jpg.
 
@@ -115,13 +117,47 @@ def center(box):
     return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
 
 
+def foot_point(box):
+    """Titik kaki (tengah-bawah kotak person) — representasi posisi orang
+    di lantai, lebih akurat dari center untuk kamera overhead miring."""
+    return ((box[0] + box[2]) / 2, box[3])
+
+
+def parse_zone(s):
+    """'x1,y1 x2,y2 ...' -> list titik polygon."""
+    pts = []
+    for tok in s.split():
+        x, y = tok.split(",")
+        pts.append((float(x), float(y)))
+    if len(pts) < 3:
+        raise ValueError("Zone butuh minimal 3 titik")
+    return pts
+
+
+def in_polygon(pt, poly):
+    """Ray casting: apakah titik di dalam polygon."""
+    x, y = pt
+    inside = False
+    j = len(poly) - 1
+    for i in range(len(poly)):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
 def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
-                  intercept, slope, annotate=True, basket_yolo=None):
+                  intercept, slope, annotate=True, basket_yolo=None, zone=None):
     img = Image.open(img_path).convert("RGB")
     w, h = img.size
 
     det = yolo.predict(img, conf=PERSON_CONF, classes=[0], verbose=False)[0]
     persons = [tuple(map(int, b.xyxy[0].tolist())) for b in det.boxes]
+    n_all = len(persons)
+    if zone:
+        persons = [p for p in persons if in_polygon(foot_point(p), zone)]
 
     # deteksi keranjang (kalau detector hasil fine-tune tersedia),
     # lalu pasangkan tiap keranjang ke person terdekat
@@ -133,6 +169,8 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
         for b in bdet.boxes:
             bbox = tuple(map(int, b.xyxy[0].tolist()))
             bc = center(bbox)
+            if zone and not in_polygon(center(bbox), zone):
+                continue
             if not persons:
                 orphan_baskets.append(bbox)
                 continue
@@ -171,7 +209,8 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
     color, color_id = status_lane(total)
 
     print(f"\n{Path(img_path).name}")
-    print(f"  antrian : {len(rows)} orang")
+    extra = f" (dari {n_all} terdeteksi, sisanya di luar zona)" if zone and n_all != len(rows) else ""
+    print(f"  antrian : {len(rows)} orang{extra}")
     for i, r in enumerate(rows, 1):
         print(f"    #{i} {r['fullness']:<22} ({r['conf']:.0%}) "
               f"[{r['source']}]  ~{r['est_items']} item -> {r['est_sec']:.0f} dtk")
@@ -181,6 +220,8 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
     if annotate and rows:
         vis = img.copy()
         d = ImageDraw.Draw(vis)
+        if zone:
+            d.polygon([tuple(p) for p in zone], outline=(255, 80, 255), width=3)
         for i, r in enumerate(rows, 1):
             d.rectangle(r["person_box"], outline=(0, 180, 255), width=3)
             d.rectangle(r["crop_box"], outline=(255, 255, 0), width=2)
@@ -204,6 +245,9 @@ def main():
     src.add_argument("--image", type=str, help="File gambar atau folder")
     src.add_argument("--video", type=str, help="File video (dianalisis 1 frame/detik)")
     parser.add_argument("--no-annotate", action="store_true")
+    parser.add_argument("--zone", type=str, default=None,
+                        help='Polygon area antrian: "x1,y1 x2,y2 x3,y3 ..." '
+                             "(piksel). Hanya orang/keranjang di dalamnya yang dihitung.")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -211,6 +255,7 @@ def main():
     basket_yolo = YOLO(BASKET_WEIGHTS) if Path(BASKET_WEIGHTS).exists() else None
     fmodel, fclasses, ftf = load_fullness_model(device)
     intercept, slope = load_regression_params()
+    zone = parse_zone(args.zone) if args.zone else None
     print(f"device={device} | model waktu: {intercept:.1f} + {slope:.2f} x item | "
           f"basket detector: {'ON (fine-tuned)' if basket_yolo else 'OFF (pakai area bawaan)'}")
 
@@ -221,7 +266,7 @@ def main():
         for path in paths:
             analyze_image(path, yolo, fmodel, fclasses, ftf, device,
                           intercept, slope, annotate=not args.no_annotate,
-                          basket_yolo=basket_yolo)
+                          basket_yolo=basket_yolo, zone=zone)
     else:
         # video: ekstrak 1 fps ke folder sementara lalu proses per frame
         import subprocess, tempfile
@@ -232,7 +277,7 @@ def main():
             for path in sorted(Path(td).glob("frame_*.jpg")):
                 analyze_image(path, yolo, fmodel, fclasses, ftf, device,
                               intercept, slope, annotate=False,
-                              basket_yolo=basket_yolo)
+                              basket_yolo=basket_yolo, zone=zone)
 
 
 if __name__ == "__main__":
