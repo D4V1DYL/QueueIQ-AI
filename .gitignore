@@ -1,0 +1,15 @@
+# environment
+.venv/
+__pycache__/
+
+# dataset & artefak besar (foto scrape ada isu lisensi, jangan di-push publik)
+dataset/
+*.pt
+class_names.txt
+
+# hasil generate ulang-able
+prediction_accuracy_improvement.png
+online_learning_results.csv
+
+# jupyter
+.ipynb_checkpoints/
