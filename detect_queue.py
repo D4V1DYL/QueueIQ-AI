@@ -41,7 +41,9 @@ from ultralytics import YOLO
 
 # ---------------- konfigurasi ----------------
 YOLO_WEIGHTS = "yolov8n.pt"          # nano: 6MB, cukup untuk MVP
+BASKET_WEIGHTS = "basket_detector.pt"  # hasil finetune_basket_detector.py (opsional)
 PERSON_CONF = 0.35                    # ambang confidence deteksi person
+BASKET_CONF = 0.35                    # ambang confidence deteksi keranjang
 FULLNESS_MODEL = "fullness_classifier.pt"
 CLASS_NAMES_FILE = "class_names.txt"
 RESULTS_CSV = "online_learning_results.csv"
@@ -109,17 +111,41 @@ def status_lane(total_sec):
 STATUS_RGB = {"green": (40, 200, 80), "yellow": (240, 200, 40), "red": (230, 60, 50)}
 
 
+def center(box):
+    return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+
 def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
-                  intercept, slope, annotate=True):
+                  intercept, slope, annotate=True, basket_yolo=None):
     img = Image.open(img_path).convert("RGB")
     w, h = img.size
 
     det = yolo.predict(img, conf=PERSON_CONF, classes=[0], verbose=False)[0]
     persons = [tuple(map(int, b.xyxy[0].tolist())) for b in det.boxes]
 
+    # deteksi keranjang (kalau detector hasil fine-tune tersedia),
+    # lalu pasangkan tiap keranjang ke person terdekat
+    basket_of = {}
+    if basket_yolo is not None:
+        bdet = basket_yolo.predict(img, conf=BASKET_CONF, verbose=False)[0]
+        for b in bdet.boxes:
+            bbox = tuple(map(int, b.xyxy[0].tolist()))
+            bc = center(bbox)
+            if not persons:
+                continue
+            nearest = min(range(len(persons)), key=lambda i: (
+                (center(persons[i])[0] - bc[0]) ** 2 +
+                (center(persons[i])[1] - bc[1]) ** 2))
+            # simpan keranjang ber-confidence tertinggi per person
+            if nearest not in basket_of or float(b.conf) > basket_of[nearest][1]:
+                basket_of[nearest] = (bbox, float(b.conf))
+
     rows = []
-    for box in persons:
-        crop_box = carry_region(box, w, h)
+    for pi, box in enumerate(persons):
+        if pi in basket_of:
+            crop_box, src = basket_of[pi][0], "basket"
+        else:
+            crop_box, src = carry_region(box, w, h), "area-bawaan"
         crop = img.crop(crop_box)
         x = ftf(crop).unsqueeze(0).to(device)
         with torch.no_grad():
@@ -129,7 +155,7 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
         items = FULLNESS_TO_ITEMS.get(label, 3)
         est = intercept + slope * items
         rows.append({
-            "person_box": box, "crop_box": crop_box,
+            "person_box": box, "crop_box": crop_box, "source": src,
             "fullness": label, "conf": float(probs[idx]),
             "est_items": items, "est_sec": est,
         })
@@ -140,8 +166,8 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
     print(f"\n{Path(img_path).name}")
     print(f"  antrian : {len(rows)} orang")
     for i, r in enumerate(rows, 1):
-        print(f"    #{i} {r['fullness']:<22} ({r['conf']:.0%})  "
-              f"~{r['est_items']} item -> {r['est_sec']:.0f} dtk")
+        print(f"    #{i} {r['fullness']:<22} ({r['conf']:.0%}) "
+              f"[{r['source']}]  ~{r['est_items']} item -> {r['est_sec']:.0f} dtk")
     print(f"  estimasi total tunggu : {total:.0f} dtk ({total/60:.1f} mnt)")
     print(f"  status lane           : {color_id} [{color}]")
 
@@ -175,9 +201,11 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     yolo = YOLO(YOLO_WEIGHTS)
+    basket_yolo = YOLO(BASKET_WEIGHTS) if Path(BASKET_WEIGHTS).exists() else None
     fmodel, fclasses, ftf = load_fullness_model(device)
     intercept, slope = load_regression_params()
-    print(f"device={device} | model waktu: {intercept:.1f} + {slope:.2f} x item")
+    print(f"device={device} | model waktu: {intercept:.1f} + {slope:.2f} x item | "
+          f"basket detector: {'ON (fine-tuned)' if basket_yolo else 'OFF (pakai area bawaan)'}")
 
     if args.image:
         p = Path(args.image)
@@ -185,7 +213,8 @@ def main():
                  if p.is_dir() else [p])
         for path in paths:
             analyze_image(path, yolo, fmodel, fclasses, ftf, device,
-                          intercept, slope, annotate=not args.no_annotate)
+                          intercept, slope, annotate=not args.no_annotate,
+                          basket_yolo=basket_yolo)
     else:
         # video: ekstrak 1 fps ke folder sementara lalu proses per frame
         import subprocess, tempfile
@@ -195,7 +224,8 @@ def main():
                             f"{td}/frame_%04d.jpg"], check=True)
             for path in sorted(Path(td).glob("frame_*.jpg")):
                 analyze_image(path, yolo, fmodel, fclasses, ftf, device,
-                              intercept, slope, annotate=False)
+                              intercept, slope, annotate=False,
+                              basket_yolo=basket_yolo)
 
 
 if __name__ == "__main__":
