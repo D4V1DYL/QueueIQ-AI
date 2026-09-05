@@ -13,3 +13,7 @@ online_learning_results.csv
 
 # jupyter
 .ipynb_checkpoints/
+
+# artefak training YOLO
+runs/
+dataset_detect/
