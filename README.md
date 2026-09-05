@@ -39,4 +39,5 @@ Foto dimasukkan ke `dataset/raw/{empty,light,medium,full,no_basket_with_items}/`
 - ✅ Basket fullness classifier (MobileNetV2 transfer learning, 9.2 MB, 5.6 ms/gambar di GTX 1050 Ti)
 - ✅ Prediksi waktu checkout — online linear regression, akurasi 74%→88% dalam 120 transaksi simulasi
 - ✅ Person detection + skor antrian (`detect_queue.py`): YOLOv8n pretrained → crop area bawaan per orang → fullness → estimasi tunggu → status lane 🟢🟡🔴
-- ⬜ Fine-tune basket detector (30-50 foto) · queue zone + tracking (ByteTrack) · dashboard Next.js + Supabase · LED ESP32
+- ✅ Basket detector fine-tuned (`finetune_basket_detector.py`): auto-label YOLO-World (zero-shot, tanpa anotasi manual) → fine-tune YOLOv8n — mAP50 0.887, precision 0.93; `detect_queue.py` otomatis memakainya bila `basket_detector.pt` ada
+- ⬜ Queue zone + tracking (ByteTrack) · dashboard Next.js + Supabase · LED ESP32

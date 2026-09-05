@@ -126,12 +126,15 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
     # deteksi keranjang (kalau detector hasil fine-tune tersedia),
     # lalu pasangkan tiap keranjang ke person terdekat
     basket_of = {}
+    orphan_baskets = []   # keranjang terdeteksi tapi tak ada person di frame
+                          # (orang tertutup rak / di luar frame) -> tetap dihitung
     if basket_yolo is not None:
         bdet = basket_yolo.predict(img, conf=BASKET_CONF, verbose=False)[0]
         for b in bdet.boxes:
             bbox = tuple(map(int, b.xyxy[0].tolist()))
             bc = center(bbox)
             if not persons:
+                orphan_baskets.append(bbox)
                 continue
             nearest = min(range(len(persons)), key=lambda i: (
                 (center(persons[i])[0] - bc[0]) ** 2 +
@@ -141,9 +144,13 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
                 basket_of[nearest] = (bbox, float(b.conf))
 
     rows = []
-    for pi, box in enumerate(persons):
-        if pi in basket_of:
-            crop_box, src = basket_of[pi][0], "basket"
+    subjects = [(box, basket_of[pi][0] if pi in basket_of else None)
+                for pi, box in enumerate(persons)]
+    subjects += [(bbox, bbox) for bbox in orphan_baskets]
+
+    for box, basket_box in subjects:
+        if basket_box is not None:
+            crop_box, src = basket_box, "basket"
         else:
             crop_box, src = carry_region(box, w, h), "area-bawaan"
         crop = img.crop(crop_box)
