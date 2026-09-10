@@ -17,3 +17,6 @@ online_learning_results.csv
 # artefak training YOLO
 runs/
 dataset_detect/
+
+# server runtime state (hasil belajar live, bisa di-reset lewat API)
+model_state.json

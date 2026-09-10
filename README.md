@@ -31,6 +31,37 @@ python -m venv .venv
 | **Analisis antrian lengkap** (YOLO + classifier + estimasi tunggu) | `python detect_queue.py --image examples/antrian_cctv.jpg` |
 | — dengan zona antrian (hanya hitung orang di polygon) | `python detect_queue.py --image cctv.jpg --zone "130,40 330,40 330,330 130,330"` |
 | Simulasi online learning | `python online_learning_simulation.py` |
+| **Server API untuk dashboard** (`QueueIQ-FE` halaman `/live`) | `pip install -r requirements-server.txt` lalu `python server.py` |
+
+## Server API (sambungan ke frontend)
+
+`server.py` membungkus pipeline (`queueiq_engine.py`) jadi HTTP + Server-Sent
+Events di `http://127.0.0.1:8000`, dipakai halaman **/live** di QueueIQ-FE.
+
+```bash
+python server.py                  # otomatis pilih tier sesuai model yang ada
+python server.py --host 0.0.0.0   # demo dari HP / laptop lain di WiFi yang sama
+python server.py --mode mock      # tanpa torch: hanya untuk demo UI
+```
+
+| Tier (dilaporkan di `/health` & header dashboard) | Kondisi |
+|---|---|
+| `full` | `yolov8n.pt` + `fullness_classifier.pt` + `class_names.txt` ada (+ `basket_detector.pt` bila ada) |
+| `heuristic` | YOLO ada, classifier belum — fullness dari heuristik tepi/warna (MASTER_PROMPT §3) |
+| `mock` | torch/ultralytics tidak terpasang — deteksi placeholder deterministik |
+
+Endpoint: `GET /health` · `GET /api/lanes` · `POST /api/lanes/{id}/analyze`
+(multipart `file` atau form `example=antrian_cctv.jpg`) · `GET /api/lanes/{id}/frame.jpg`
+· `POST /api/lanes/{id}/complete` `{"actual_sec": 87}` (feedback → SGD step, tersimpan di
+`model_state.json`) · `POST /api/lanes/{id}/open` · `GET /api/model` (parameter + riwayat
+akurasi) · `POST /api/model/reset` · `POST /api/demo/scenario` `{"name": "seed"|"surge"|"cctv"|"clear"}`
+· `GET /api/led/{id}` (teks `green|amber|red|closed` untuk ESP32) · `GET /api/events` (SSE).
+
+Foto contoh untuk galeri di dashboard diambil dari folder `examples/` (semua `.jpg/.png/.webp` selain `*_annotated`) — taruh foto antrian troli/keranjang sendiri di sana agar muncul sebagai contoh yang bisa diklik.
+
+Server hanya melayani klien loopback / IP privat LAN; persempit lagi dengan
+`QUEUEIQ_ALLOWED_IPS=192.168.1.20,192.168.1.55`. Ambang lampu selaras dengan
+dashboard: hijau ≤ 120 dtk, kuning ≤ 240 dtk, merah di atasnya.
 
 Foto dimasukkan ke `dataset/raw/{empty,light,medium,full,no_basket_with_items}/`
 (nama folder = label). Panduan pengambilan foto: [`PANDUAN_FOTO.md`](PANDUAN_FOTO.md).
@@ -42,4 +73,5 @@ Foto dimasukkan ke `dataset/raw/{empty,light,medium,full,no_basket_with_items}/`
 - ✅ Person detection + skor antrian (`detect_queue.py`): YOLOv8n pretrained → crop area bawaan per orang → fullness → estimasi tunggu → status lane 🟢🟡🔴
 - ✅ Basket detector fine-tuned (`finetune_basket_detector.py`): auto-label YOLO-World (zero-shot, tanpa anotasi manual) → fine-tune YOLOv8n — mAP50 0.887, precision 0.93; `detect_queue.py` otomatis memakainya bila `basket_detector.pt` ada
 - ✅ Queue zone (`--zone`): hanya orang/keranjang di polygon area antrian yang dihitung — kasir & pengunjung lewat tersaring
-- ⬜ Tracking antar-frame (ByteTrack) · dashboard Next.js + Supabase · LED ESP32
+- ✅ Server API (`server.py` + `queueiq_engine.py`): FastAPI + SSE, feedback checkout → online learning live, endpoint LED untuk ESP32, tersambung ke dashboard `/live` di QueueIQ-FE
+- ⬜ Tracking antar-frame (ByteTrack) · Supabase persist · firmware LED ESP32

@@ -1,0 +1,7 @@
+# Dependensi tambahan untuk server.py (di atas requirements.txt).
+#   pip install -r requirements-server.txt
+# Tanpa torch/ultralytics server tetap jalan di tier "mock" (demo UI saja).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pillow

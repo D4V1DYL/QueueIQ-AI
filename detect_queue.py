@@ -58,7 +58,7 @@ FULLNESS_TO_ITEMS = {
 
 # ambang status lane (detik total antrian) -> warna lampu
 THRESHOLD_GREEN = 120     # < 2 menit
-THRESHOLD_YELLOW = 300    # < 5 menit; di atasnya merah
+THRESHOLD_YELLOW = 240    # < 4 menit; di atasnya merah (selaras dashboard & server.py)
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
