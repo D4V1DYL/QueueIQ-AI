@@ -47,7 +47,7 @@ python server.py --mode mock      # tanpa torch: hanya untuk demo UI
 
 | Tier (dilaporkan di `/health` & header dashboard) | Kondisi |
 |---|---|
-| `full` | `yolov8n.pt` + `fullness_classifier.pt` + `class_names.txt` ada (+ `basket_detector.pt` bila ada) |
+| `full` | `yolov8n.pt` + `fullness_classifier.pt` + `class_names.txt` ada (+ `basket_detector.pt` bila ada) — **semuanya sudah ikut di repo**, tinggal clone |
 | `heuristic` | YOLO ada, classifier belum — fullness dari heuristik tepi/warna (MASTER_PROMPT §3) |
 | `mock` | torch/ultralytics tidak terpasang — deteksi placeholder deterministik |
 
@@ -59,7 +59,7 @@ akurasi) · `POST /api/model/reset` · `POST /api/demo/scenario` `{"name": "seed
 · `GET /api/led/{id}` (teks `green|amber|red|closed` untuk ESP32) · `GET /api/events` (SSE).
 
 **Kamera virtual (demo tanpa webcam/supermarket):** `python fetch_demo_video.py`
-mengunduh 2 footage CCTV kasir dari YouTube ke `videos/` (di-gitignore). Di
+mengunduh footage CCTV kasir dari YouTube ke `videos/` (2 video sudah ikut di repo). Di
 dashboard `/live` video muncul di "Sample footage · play as virtual camera";
 server membaca 1 frame tiap 2 detik lewat pipeline yang sama seperti webcam
 (`POST /api/lanes/{id}/video`). Taruh file `.mp4` lain di `videos/` agar ikut muncul.

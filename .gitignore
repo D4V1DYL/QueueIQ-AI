@@ -5,7 +5,10 @@ __pycache__/
 # dataset & artefak besar (foto scrape ada isu lisensi, jangan di-push publik)
 dataset/
 *.pt
-class_names.txt
+# bobot yang dibutuhkan demo ikut di-push supaya laptop demo tinggal clone
+!fullness_classifier.pt
+!basket_detector.pt
+!yolov8n.pt
 
 # hasil generate ulang-able
 prediction_accuracy_improvement.png
@@ -21,5 +24,7 @@ dataset_detect/
 # server runtime state (hasil belajar live, bisa di-reset lewat API)
 model_state.json
 
-# footage demo pihak ketiga untuk kamera virtual (fetch_demo_video.py)
-videos/
+# footage demo untuk kamera virtual ikut di-push (fetch_demo_video.py bisa
+# menambah lagi); hanya .mp4 di folder ini
+videos/*
+!videos/*.mp4

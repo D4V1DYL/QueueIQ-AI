@@ -1,0 +1,5 @@
+empty
+full
+light
+medium
+no_basket_with_items
