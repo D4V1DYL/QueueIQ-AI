@@ -446,10 +446,24 @@ def create_app(mode: str = "auto") -> FastAPI:
 
     allowed_env = os.environ.get("QUEUEIQ_ALLOWED_IPS", "").strip()
     allowed_ips = {ip.strip() for ip in allowed_env.split(",") if ip.strip()}
+    public = os.environ.get("QUEUEIQ_PUBLIC", "").strip().lower() in ("1", "true", "yes")
+    trust_proxy = os.environ.get("QUEUEIQ_TRUST_PROXY", "").strip().lower() in ("1", "true", "yes")
+
+    def client_ip(request: Request) -> str:
+        """The caller's address. Behind a reverse proxy every request appears to
+        come from the proxy itself, so the real address is only known when the
+        deployment explicitly says the X-Forwarded-For header can be trusted."""
+        if trust_proxy:
+            fwd = request.headers.get("x-forwarded-for", "")
+            if fwd:
+                return fwd.split(",")[0].strip()
+        return request.client.host if request.client else "127.0.0.1"
 
     @app.middleware("http")
     async def lan_only(request: Request, call_next):
-        host = request.client.host if request.client else "127.0.0.1"
+        if public:
+            return await call_next(request)
+        host = client_ip(request)
         try:
             ip = ipaddress.ip_address(host)
             ok = ip.is_loopback or ip.is_private or ip.is_link_local
@@ -474,6 +488,11 @@ def create_app(mode: str = "auto") -> FastAPI:
             f"QueueIQ Vision API {VERSION} online — tier={engine.tier}, device={engine.device}, "
             f"model {engine.regressor.summary()['formula']} "
             f"({engine.regressor.summary()['n_updates']} feedback samples).", kind="system")
+        if public:
+            await store.add_log(
+                "QUEUEIQ_PUBLIC is set: the private-network guard is OFF. Anyone who can "
+                "reach this port can drive the demo and spend CPU on inference — put "
+                "authentication in front of it (see DEPLOY.md).", kind="system")
 
     # ---------------- health ----------------
     @app.get("/health")
@@ -724,7 +743,11 @@ def main():
     parser.add_argument("--mode", choices=["auto", "mock"], default=os.environ.get("QUEUEIQ_MODE", "auto"))
     args = parser.parse_args()
     app = create_app(mode=args.mode)
-    print(f"QueueIQ Vision API -> http://{args.host}:{args.port}  (tier={app.state.store.engine.tier})")
+    tier = app.state.store.engine.tier
+    print(f"QueueIQ Vision API -> http://{args.host}:{args.port}  (tier={tier})")
+    if os.environ.get("QUEUEIQ_PUBLIC", "").strip().lower() in ("1", "true", "yes"):
+        print("WARNING: QUEUEIQ_PUBLIC is set — the private-network guard is disabled. "
+              "Only do this behind a reverse proxy that authenticates callers.")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

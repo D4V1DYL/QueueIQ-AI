@@ -10,8 +10,13 @@ machine (the demo laptop, or a mini-PC next to the checkout lanes):
 
 The browser talks to the Vision API **directly** (fetch + Server-Sent Events),
 so both must be reachable from whichever device shows the dashboard. The API
-serves only loopback and private-LAN clients by design — model inference and
-camera frames never leave the local network.
+serves only loopback and private-LAN clients by default — model inference and
+camera frames never leave the local network unless you deliberately open it up
+(Path C).
+
+Model weights are resolved from `QUEUEIQ_MODELS_DIR` before the checkout folder,
+so on a server they can live outside git; `python fetch_models.py` puts them in
+place and rebuilds what it can from public weights.
 
 ---
 
@@ -20,7 +25,10 @@ camera frames never leave the local network.
 Everything on one machine, judges look at that screen. Two terminals.
 
 **Prerequisites:** Python 3.11–3.13 and Node.js ≥ 22.13. Verified on
-Python 3.13.1 / Node 22.23.2 / npm 10.9.8.
+Python 3.13.1 / Node 22.23.2 / npm 10.9.8. Both repositories are private, so a
+fresh clone needs a GitHub account with access (or an SSH deploy key, as in
+Path C) — copying the folders across on a USB stick works just as well and is
+the safer bet at a venue with no internet.
 
 ### Terminal 1 — Vision API
 
@@ -122,23 +130,219 @@ allowed browser origins the same way.
 
 ---
 
-## Path C — public hosting
+## Path C — Oracle Cloud (or any public Linux server)
 
-**Not supported as-is, and not recommended for the hackathon.** Two things break:
+This works, but it is a different security posture from the LAN setup: the
+dashboard becomes reachable by anyone who knows the address, and inference costs
+CPU on your instance. Read the whole section before opening a port.
 
-1. The Vision API refuses any client that is not loopback or a private LAN
-   address. That guard is deliberate.
-2. A dashboard served over HTTPS cannot call an HTTP API — browsers block mixed
-   content, and the models cannot run on a static host anyway.
+Three things have to be arranged, in this order.
 
-If a public demo is genuinely required, the shape that works is: keep the Vision
-API on the local machine, expose it through an HTTPS tunnel
-(`cloudflared tunnel --url http://localhost:8000`), remove the LAN guard in
-`server.py`, put real authentication in front of it, then deploy the dashboard
-(`npm run build`, `dist/` is a Cloudflare Workers bundle — `npm start` runs it
-through Wrangler) and point it at the tunnel URL with `?api=`. That is a
-different security posture from the one this project was built for, so treat it
-as a separate piece of work rather than a deployment step.
+### C1. Choose the instance
+
+| Shape | Verdict |
+|---|---|
+| Ampere A1 (VM.Standard.A1.Flex, ARM, free tier up to 4 OCPU / 24 GB) | **Recommended.** PyTorch ships aarch64 wheels; plenty of headroom. |
+| VM.Standard.E2.1.Micro (AMD, free tier, 1 GB RAM) | Tight but workable. The server measured **359 MB resident** after inference on this project's models. Add 1–2 GB of swap; a build or a second process will otherwise get killed. |
+
+Disk: PyTorch alone unpacks to about **1.2 GB**, plus roughly 46 MB of weights.
+A 50 GB boot volume is more than enough.
+
+On ARM, install PyTorch from plain PyPI — the `cu126` index in
+`requirements.txt` is for Pascal GPUs on x86 and does not apply:
+
+```bash
+pip install torch torchvision --index-url https://pypi.org/simple
+pip install -r requirements.txt -r requirements-server.txt
+```
+
+### C2. Get the code and the weights onto the server
+
+The repositories are private, so the server needs its own read access: add a
+**deploy key** (`ssh-keygen -t ed25519`, then paste the public key under the
+repository's Settings → Deploy keys) and clone over SSH. A shallow clone keeps
+the transfer small:
+
+```bash
+git clone --depth 1 git@github.com:D4V1DYL/QueueIQ-AI.git /opt/queueiq/api
+git clone --depth 1 git@github.com:D4V1DYL/QueueIQ-FE.git /opt/queueiq/web
+```
+
+The weights are resolved from `QUEUEIQ_MODELS_DIR` before the checkout folder,
+so they can live outside git — on a block volume, or simply in `/opt/queueiq/models`:
+
+```bash
+export QUEUEIQ_MODELS_DIR=/opt/queueiq/models
+cd /opt/queueiq/api && python fetch_models.py
+```
+
+`fetch_models.py` rebuilds `yolov8n.pt` and `basket_world.pt` locally from public
+Ultralytics weights, so only three files have to come from you —
+`fullness_classifier.pt`, `class_names.txt` and (optionally) `basket_detector.pt`,
+about 15 MB in total. Either copy them across once:
+
+```bash
+scp fullness_classifier.pt class_names.txt basket_detector.pt \
+    opc@<instance-ip>:/opt/queueiq/models/
+```
+
+or upload them to an Object Storage bucket, create a **pre-authenticated
+request** for the bucket (Object Storage → Bucket → Pre-Authenticated Requests →
+"Enable object reads on the bucket"), and let the script pull them:
+
+```bash
+export QUEUEIQ_MODELS_URL=https://objectstorage.<region>.oraclecloud.com/p/<token>/n/<namespace>/b/queueiq-models/o
+python fetch_models.py
+```
+
+Checksums for the trained files are baked into the script, so a truncated or
+swapped download is rejected rather than silently loaded. Confirm with:
+
+```bash
+python fetch_models.py --check     # exits non-zero when tier full is impossible
+```
+
+### C3. Put both services behind one HTTPS origin
+
+A dashboard served over HTTPS **cannot** call an HTTP API on port 8000 — browsers
+block mixed content. One reverse proxy on port 443 serving both from the same
+origin solves that, and it is also what makes the webcam capture work at all,
+since `getUserMedia` requires a secure context.
+
+The dashboard already expects this: over HTTPS it calls its own origin with no
+port, so no configuration is needed as long as `/api/*` and `/health` reach the
+Python service.
+
+`/etc/caddy/Caddyfile`, with a DNS record pointing at the instance:
+
+```caddyfile
+queueiq.example.com {
+    encode zstd gzip
+
+    # Remove this block only if the demo is meant to be world-writable.
+    basicauth {
+        judge $2a$14$<bcrypt-hash-from-"caddy hash-password">
+    }
+
+    @api path /api/* /health
+    handle @api {
+        reverse_proxy 127.0.0.1:8000 {
+            header_up X-Forwarded-For {remote_host}
+            flush_interval -1          # required: /api/events is a live SSE stream
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:4173
+    }
+}
+```
+
+Caddy obtains and renews the certificate automatically. `flush_interval -1`
+matters: without it the Server-Sent Events stream is buffered and the dashboard
+never updates.
+
+### C4. Open the network path — both layers
+
+Oracle blocks inbound traffic twice, and forgetting the second layer is the most
+common reason a correct deployment looks dead.
+
+1. **Security list / NSG** in the console: add an ingress rule for TCP 443 (and
+   80 for the certificate challenge) from `0.0.0.0/0`.
+2. **The instance firewall**, which Oracle images enable by default:
+
+```bash
+# Oracle Linux / RHEL
+sudo firewall-cmd --permanent --add-service=http --add-service=https
+sudo firewall-cmd --reload
+
+# Ubuntu images use iptables directly
+sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+sudo netfilter-persistent save
+```
+
+Ports 8000 and 4173 stay closed to the internet — only Caddy talks to them.
+
+### C5. Run both services under systemd
+
+`/etc/systemd/system/queueiq-api.service`:
+
+```ini
+[Unit]
+Description=QueueIQ Vision API
+After=network-online.target
+
+[Service]
+User=queueiq
+WorkingDirectory=/opt/queueiq/api
+Environment=QUEUEIQ_MODELS_DIR=/opt/queueiq/models
+Environment=QUEUEIQ_PUBLIC=1
+Environment=QUEUEIQ_TRUST_PROXY=1
+ExecStart=/opt/queueiq/api/.venv/bin/python server.py --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/queueiq-web.service`:
+
+```ini
+[Unit]
+Description=QueueIQ Dashboard
+After=network-online.target
+
+[Service]
+User=queueiq
+WorkingDirectory=/opt/queueiq/web
+ExecStart=/usr/bin/npx vinext start -p 4173
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+cd /opt/queueiq/web && npm ci && npm run build
+sudo systemctl daemon-reload
+sudo systemctl enable --now queueiq-api queueiq-web caddy
+journalctl -u queueiq-api -f        # confirm "tier=full"
+```
+
+`--host 127.0.0.1` is deliberate: the API listens only on loopback and is
+reachable exclusively through Caddy.
+
+### What the two new settings mean
+
+`QUEUEIQ_PUBLIC=1` switches off the private-network guard. Without it every
+request would be refused, because a public client is not a LAN client. The
+server prints a warning at startup and logs one to the dashboard, since from
+that moment authentication is entirely Caddy's job.
+
+`QUEUEIQ_TRUST_PROXY=1` makes the server read the caller's address from
+`X-Forwarded-For` instead of the socket. Behind a proxy every request appears to
+come from `127.0.0.1`, which would make the LAN guard pass for the whole
+internet — so if you ever turn `QUEUEIQ_PUBLIC` off again and rely on
+`QUEUEIQ_ALLOWED_IPS`, this flag is what makes the allowlist meaningful. Only
+set it when a proxy you control really does set that header.
+
+### Limits worth knowing before you demo from a public URL
+
+- **CPU inference is the bottleneck.** 150–400 ms per frame on this laptop; a
+  free-tier instance will be slower, and every viewer who plays the virtual
+  camera adds a frame every 2 seconds.
+- **State is shared and in memory.** All viewers see the same four lanes, and
+  anyone can press *Clear* or *Reset model*. There is one demo, not a session
+  per visitor.
+- **A restart forgets the lanes.** Only the learned model parameters survive, in
+  `model_state.json` — put that file on the same volume as the models if you
+  want it to persist across redeployments.
+- **The videos and sample frames are third-party footage.** Fine for an internal
+  demo, worth replacing with your own recordings before a public link is shared
+  widely.
 
 ---
 
@@ -151,6 +355,10 @@ as a separate piece of work rather than a deployment step.
 | `QUEUEIQ_MODE` | `auto` | `mock` runs the UI with placeholder detections and no torch |
 | `QUEUEIQ_ALLOWED_IPS` | empty | Comma-separated allowlist; empty means any private-LAN client |
 | `QUEUEIQ_CORS` | `*` | Comma-separated allowed browser origins |
+| `QUEUEIQ_PUBLIC` | unset | `1` disables the private-network guard. Only behind an authenticating proxy — see Path C |
+| `QUEUEIQ_TRUST_PROXY` | unset | `1` reads the caller's address from `X-Forwarded-For` instead of the socket |
+| `QUEUEIQ_MODELS_DIR` | the repo folder | Where the weights are loaded from; falls back to the repo per file |
+| `QUEUEIQ_MODELS_URL` | unset | Base URL `fetch_models.py` downloads the trained weights from |
 | `YOLO_OFFLINE` | set to `1` by `server.py` | Stops Ultralytics contacting the network |
 
 The dashboard has no build-time configuration. The API address comes from the
@@ -192,3 +400,7 @@ laptop-only path needs no network at all.
 | `ERR_CONNECTION_REFUSED` on port 8000 | The API crashed or the port is taken. `netstat -ano \| findstr :8000`. |
 | Inference feels slow | Expected on CPU (150–400 ms/frame). Reduce the virtual camera rate, or run on a machine with a supported GPU. |
 | Model parameters look wrong after testing | `POST /api/model/reset` with `{"warm_start": true}` restores the synthetic warm start. |
+| Public deployment: every request is `403 LAN-only` | `QUEUEIQ_PUBLIC=1` is not set on the service. |
+| Public deployment: page loads, lanes never update | The proxy is buffering Server-Sent Events. Caddy needs `flush_interval -1`, nginx needs `proxy_buffering off`. |
+| Public deployment: nothing answers on 443 | Two firewalls. Check the OCI security list **and** `firewall-cmd --list-all` / `iptables -L INPUT` on the instance. |
+| `python fetch_models.py` reports MISSING | The three trained files are not public. Copy them with scp or serve them through `QUEUEIQ_MODELS_URL`. |

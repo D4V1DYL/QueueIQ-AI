@@ -37,6 +37,7 @@ python -m venv .venv
 | Online-learning simulation | `python online_learning_simulation.py` |
 | **API server for the dashboard** (`QueueIQ-FE` page `/live`) | `pip install -r requirements-server.txt` then `python server.py` |
 | CCTV footage for the dashboard's virtual camera | `pip install yt-dlp` then `python fetch_demo_video.py` |
+| Put the weights in place on a server (rebuilds what it can) | `python fetch_models.py` |
 
 ## API server (the bridge to the frontend)
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
 import io
 import json
 import math
@@ -37,15 +38,27 @@ from PIL import Image, ImageDraw, ImageFilter, ImageStat
 
 ROOT = Path(__file__).resolve().parent
 
+# Weights live next to this file by default. Set QUEUEIQ_MODELS_DIR to keep them
+# somewhere else - a mounted block volume on a server, or a shared folder that is
+# not part of the git checkout. Files found there win over the ones in the repo.
+MODELS_DIR = Path(os.environ.get("QUEUEIQ_MODELS_DIR") or ROOT).expanduser()
+
+
+def model_path(name: str) -> Path:
+    """Resolve a weight file: QUEUEIQ_MODELS_DIR first, then the repo folder."""
+    candidate = MODELS_DIR / name
+    return candidate if candidate.exists() else ROOT / name
+
+
 # ---------------- configuration ----------------
-YOLO_WEIGHTS = ROOT / "yolov8n.pt"
-BASKET_WEIGHTS = ROOT / "basket_detector.pt"        # YOLOv8n fine-tuned on scraped photos
-BASKET_WORLD_WEIGHTS = ROOT / "basket_world.pt"     # YOLO-World with the vocabulary
-                                                    # ["shopping basket", "shopping cart"] baked in
-                                                    # (no CLIP needed at runtime) - preferred:
-                                                    # far better recall on real store scenes
-FULLNESS_MODEL = ROOT / "fullness_classifier.pt"
-CLASS_NAMES_FILE = ROOT / "class_names.txt"
+YOLO_WEIGHTS = model_path("yolov8n.pt")
+BASKET_WEIGHTS = model_path("basket_detector.pt")        # YOLOv8n fine-tuned on scraped photos
+BASKET_WORLD_WEIGHTS = model_path("basket_world.pt")     # YOLO-World with the vocabulary
+                                                         # ["shopping basket", "shopping cart"] baked in
+                                                         # (no CLIP needed at runtime) - preferred:
+                                                         # far better recall on real store scenes
+FULLNESS_MODEL = model_path("fullness_classifier.pt")
+CLASS_NAMES_FILE = model_path("class_names.txt")
 RESULTS_CSV = ROOT / "online_learning_results.csv"
 SYNTHETIC_CSV = ROOT / "synthetic_checkout_data.csv"
 MODEL_STATE = ROOT / "model_state.json"
