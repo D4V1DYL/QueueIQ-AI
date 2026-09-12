@@ -10,6 +10,9 @@ end-to-end notebook (dataset → training → evaluation → checkout-time
 prediction) with an explanation of every stage. Full concept and
 architecture: [`MASTER_PROMPT.md`](MASTER_PROMPT.md).
 
+**Deploying for a demo:** [`DEPLOY.md`](DEPLOY.md) — laptop-only and LAN setups,
+firewall commands, a demo-day checklist and a troubleshooting table.
+
 ## Setup
 
 ```bash
