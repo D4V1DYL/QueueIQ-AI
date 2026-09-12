@@ -39,15 +39,23 @@ ROOT = Path(__file__).resolve().parent
 
 # ---------------- configuration ----------------
 YOLO_WEIGHTS = ROOT / "yolov8n.pt"
-BASKET_WEIGHTS = ROOT / "basket_detector.pt"
+BASKET_WEIGHTS = ROOT / "basket_detector.pt"        # YOLOv8n fine-tuned on scraped photos
+BASKET_WORLD_WEIGHTS = ROOT / "basket_world.pt"     # YOLO-World with the vocabulary
+                                                    # ["shopping basket", "shopping cart"] baked in
+                                                    # (no CLIP needed at runtime) - preferred:
+                                                    # far better recall on real store scenes
 FULLNESS_MODEL = ROOT / "fullness_classifier.pt"
 CLASS_NAMES_FILE = ROOT / "class_names.txt"
 RESULTS_CSV = ROOT / "online_learning_results.csv"
 SYNTHETIC_CSV = ROOT / "synthetic_checkout_data.csv"
 MODEL_STATE = ROOT / "model_state.json"
 
-PERSON_CONF = 0.35
-BASKET_CONF = 0.35
+PERSON_CONF = 0.45          # raised from 0.35: fewer phantom people in busy scenes
+PERSON_IOU = 0.5            # NMS threshold for person boxes
+BASKET_CONF = 0.35          # fine-tuned detector
+BASKET_WORLD_CONF = 0.25    # YOLO-World is better calibrated at a lower threshold
+MIN_PERSON_AREA_FRAC = 0.008   # drop person boxes under 0.8% of the frame (background)
+CONTAINMENT_DROP = 0.65        # drop a person box if >= 65% of it sits inside a bigger one
 
 # fullness -> approximate item count (midpoint of the label's range)
 FULLNESS_TO_ITEMS = {
@@ -110,6 +118,78 @@ def in_polygon(pt, poly):
             inside = not inside
         j = i
     return inside
+
+
+def _area(b):
+    return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+
+
+def _inter(a, b):
+    return (max(0, min(a[2], b[2]) - max(a[0], b[0])) *
+            max(0, min(a[3], b[3]) - max(a[1], b[1])))
+
+
+def dedup_persons(persons, img_w, img_h):
+    """Remove duplicate / nested / tiny person boxes.
+
+    YOLO NMS keeps overlapping boxes when their IoU is low, e.g. a torso box
+    inside a full-body box, or a child sitting in a cart. Those inflate the
+    queue count, so a box mostly contained in a larger box is dropped, and so
+    are boxes too small to be a queuing shopper."""
+    keep = []
+    for p in sorted(persons, key=_area, reverse=True):
+        if _area(p) < MIN_PERSON_AREA_FRAC * img_w * img_h:
+            continue
+        if any(_inter(p, k) / max(_area(p), 1) >= CONTAINMENT_DROP for k in keep):
+            continue
+        keep.append(p)
+    return sorted(keep, key=lambda b: b[0])   # left to right for stable numbering
+
+
+def dedup_baskets(baskets, iou_thr=0.6):
+    """YOLO-World may return the same object as both "basket" and "cart";
+    keep the higher-confidence box when two overlap heavily."""
+    keep = []
+    for bbox, conf in sorted(baskets, key=lambda b: -b[1]):
+        dup = False
+        for k, _ in keep:
+            inter = _inter(bbox, k)
+            if inter / max(_area(bbox) + _area(k) - inter, 1) > iou_thr:
+                dup = True
+                break
+        if not dup:
+            keep.append((bbox, conf))
+    return keep
+
+
+def assign_baskets(persons, baskets):
+    """Pair each detected basket with the person most likely carrying it.
+
+    In a queue the lower body is often occluded, so YOLO's person box can end
+    at the waist while the basket hangs well below it. A basket therefore
+    qualifies for a person when its centre lies within the person's box
+    widened by one body-width on each side, anywhere from the person's chest
+    down to 1.25 body-heights below the box. The closest candidate wins (horizontal offset
+    weighs more than the vertical gap); each person keeps only the
+    highest-confidence basket. Baskets with no plausible owner are orphans."""
+    basket_of: dict[int, tuple] = {}
+    orphans = []
+    for bbox, conf in dedup_baskets(baskets):
+        bx, by = center(bbox)
+        cands = []
+        for i, (x1, y1, x2, y2) in enumerate(persons):
+            pw, ph = max(x2 - x1, 1), max(y2 - y1, 1)
+            cx = (x1 + x2) / 2
+            if (x1 - 1.0 * pw <= bx <= x2 + 1.0 * pw) and (y1 + 0.3 * ph <= by <= y2 + 1.25 * ph):
+                score = ((bx - cx) / pw) ** 2 + 0.5 * (max(0.0, by - y2) / ph) ** 2
+                cands.append((score, i))
+        if not cands:
+            orphans.append(bbox)
+            continue
+        _, i = min(cands)
+        if i not in basket_of or conf > basket_of[i][1]:
+            basket_of[i] = (bbox, conf)
+    return basket_of, orphans
 
 
 def status_for(total_sec: float) -> str:
@@ -314,6 +394,8 @@ class QueueEngine:
         self.device = "cpu"
         self.yolo = None
         self.basket_yolo = None
+        self.basket_kind: Optional[str] = None
+        self.basket_conf = BASKET_CONF
         self.fullness = None
         self.load_error: Optional[str] = None
         self.regressor = regressor or OnlineRegressor()
@@ -329,8 +411,12 @@ class QueueEngine:
             from ultralytics import YOLO
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
             self.yolo = YOLO(str(YOLO_WEIGHTS))
-            if BASKET_WEIGHTS.exists():
+            if BASKET_WORLD_WEIGHTS.exists():
+                self.basket_yolo = YOLO(str(BASKET_WORLD_WEIGHTS))
+                self.basket_kind, self.basket_conf = "yolo-world (basket + cart vocabulary)", BASKET_WORLD_CONF
+            elif BASKET_WEIGHTS.exists():
                 self.basket_yolo = YOLO(str(BASKET_WEIGHTS))
+                self.basket_kind, self.basket_conf = "yolov8n fine-tuned", BASKET_CONF
             if FULLNESS_MODEL.exists() and CLASS_NAMES_FILE.exists():
                 self.fullness = TorchFullness(self.device)
                 self.tier = "full"
@@ -351,7 +437,7 @@ class QueueEngine:
             "device": self.device,
             "models": {
                 "person_detector": "yolov8n (COCO pretrained)" if self.yolo else None,
-                "basket_detector": "yolov8n fine-tuned" if self.basket_yolo else None,
+                "basket_detector": self.basket_kind,
                 "fullness": getattr(self.fullness, "name", None),
             },
             "thresholds": {"green_max_sec": THRESHOLD_GREEN, "amber_max_sec": THRESHOLD_AMBER},
@@ -390,28 +476,28 @@ class QueueEngine:
 
     def _real_detections(self, img, zone):
         w, h = img.size
-        det = self.yolo.predict(img, conf=PERSON_CONF, classes=[0], verbose=False)[0]
-        persons = [tuple(map(int, b.xyxy[0].tolist())) for b in det.boxes]
-        n_all = len(persons)
+        det = self.yolo.predict(img, conf=PERSON_CONF, iou=PERSON_IOU, classes=[0], verbose=False)[0]
+        raw = [tuple(map(int, b.xyxy[0].tolist())) for b in det.boxes]
+        n_all = len(raw)
+        persons = dedup_persons(raw, w, h)
         if zone:
             persons = [p for p in persons if in_polygon(foot_point(p), zone)]
 
         basket_of: dict[int, tuple] = {}
         orphan = []
         if self.basket_yolo is not None:
-            bdet = self.basket_yolo.predict(img, conf=BASKET_CONF, verbose=False)[0]
+            bdet = self.basket_yolo.predict(img, conf=self.basket_conf, verbose=False)[0]
+            baskets = []
             for b in bdet.boxes:
                 bbox = tuple(map(int, b.xyxy[0].tolist()))
-                bc = center(bbox)
-                if zone and not in_polygon(bc, zone):
+                if zone and not in_polygon(center(bbox), zone):
                     continue
-                if not persons:
-                    orphan.append(bbox)
-                    continue
-                nearest = min(range(len(persons)), key=lambda i: (
-                    (center(persons[i])[0] - bc[0]) ** 2 + (center(persons[i])[1] - bc[1]) ** 2))
-                if nearest not in basket_of or float(b.conf) > basket_of[nearest][1]:
-                    basket_of[nearest] = (bbox, float(b.conf))
+                baskets.append((bbox, float(b.conf)))
+            basket_of, unowned = assign_baskets(persons, baskets)
+            # a basket with no owner only counts as a shopper when nobody was
+            # detected at all (person hidden by a shelf / out of frame)
+            if not persons:
+                orphan = unowned
 
         subjects = [(box, basket_of[i][0] if i in basket_of else None) for i, box in enumerate(persons)]
         subjects += [(None, bbox) for bbox in orphan]
@@ -424,6 +510,14 @@ class QueueEngine:
                 crop_box, src = carry_region(pbox, w, h), "carry-region"
             crop = img.crop(crop_box)
             label, conf, detail = self.fullness.predict(crop)
+            if src == "basket" and label == "no_basket_with_items":
+                # the detector found a basket, so "hand-carried" is impossible:
+                # take the most likely basket class instead
+                probs = detail if isinstance(detail, dict) else {}
+                ranked = sorted(((v, k) for k, v in probs.items()
+                                 if k != "no_basket_with_items" and isinstance(v, (int, float))),
+                                reverse=True)
+                label, conf = (ranked[0][1], ranked[0][0]) if ranked else ("light", conf)
             items = FULLNESS_TO_ITEMS.get(label, 3)
             dets.append(Detection(i, pbox, crop_box, src, label, conf, items,
                                   round(self.regressor.predict(items), 1), detail))
@@ -467,7 +561,8 @@ class QueueEngine:
                 tx, ty = r.person_box[0] + 4, r.person_box[1] + 4
             else:
                 tx, ty = r.crop_box[0] + 4, r.crop_box[1] + 4
-            d.rectangle(r.crop_box, outline=(255, 255, 0), width=2)
+            if r.source == "basket":      # only draw real basket/cart boxes, not the fallback crop
+                d.rectangle(r.crop_box, outline=(255, 255, 0), width=2)
             d.text((tx, ty), f"#{i} {r.fullness[:8]} {r.est_sec:.0f}s", fill=(0, 180, 255))
         d.rectangle((0, 0, w, 26), fill=STATUS_RGB[status])
         d.text((8, 6), f"LANE {status.upper()} | {len(dets)} shoppers | ~{total:.0f} s"

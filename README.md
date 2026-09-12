@@ -48,7 +48,7 @@ python server.py --mode mock      # no torch: UI demo only
 
 | Tier (reported by `/health` and the dashboard header) | Condition |
 |---|---|
-| `full` | `yolov8n.pt` + `fullness_classifier.pt` + `class_names.txt` present (+ `basket_detector.pt` when available) — **all of them ship with this repo**, just clone |
+| `full` | `yolov8n.pt` + `fullness_classifier.pt` + `class_names.txt` present (+ `basket_world.pt` or `basket_detector.pt` when available) — **all of them ship with this repo**, just clone |
 | `heuristic` | YOLO present, no classifier — fullness from an edge/colour heuristic (MASTER_PROMPT §3) |
 | `mock` | torch/ultralytics not installed — deterministic placeholder detections |
 
@@ -86,7 +86,8 @@ Training photos go into `dataset/raw/{empty,light,medium,full,no_basket_with_ite
 - ✅ Basket fullness classifier (MobileNetV2 transfer learning, 9.2 MB, 5.6 ms/image on a GTX 1050 Ti). Retrained from scratch on scraped data (`scrape_images.py` → curation → `prepare_dataset.py` → `train_fullness_classifier.py --epochs 25 --lr 4e-4 --unfreeze_last 4`): 225 photos, 5-class val accuracy 56%, empty-vs-has-items 93%, 3-level (empty / light / medium-full) 80%, within one level 98% — stock-photo labels are noisy; real photos from your own camera will do much better
 - ✅ Checkout-time prediction — online linear regression, accuracy 74% → 88% over 120 simulated transactions
 - ✅ Person detection + queue score (`detect_queue.py`): pretrained YOLOv8n → carry-region crop per person → fullness → wait estimate → lane status 🟢🟡🔴
-- ✅ Fine-tuned basket detector (`finetune_basket_detector.py`): YOLO-World auto-labelling (zero-shot, no manual annotation) → YOLOv8n fine-tune — mAP50 0.887, precision 0.93 on the original dataset; retrained on scraped data (116 photos, 30 epochs on CPU in about 12 minutes) gives mAP50 0.82, precision 0.82; `detect_queue.py` and `server.py` use it automatically when `basket_detector.pt` exists
+- ✅ Basket/cart detector: `basket_world.pt` (YOLO-World-S with the vocabulary "shopping basket" / "shopping cart" baked in, 26 MB, no CLIP needed at runtime, ~150-400 ms/frame on CPU) is preferred by `server.py` because it finds baskets and carts in real store scenes far more reliably than the fine-tuned nano; `basket_detector.pt` (`finetune_basket_detector.py`: YOLO-World auto-labelling → YOLOv8n fine-tune, mAP50 0.82 on scraped photos) remains the lighter fallback
+- ✅ Queue-count hygiene (`queueiq_engine.py`): person confidence 0.45, nested/duplicate person boxes and tiny background boxes dropped, baskets paired with the person whose (often occluded) body they hang beside, and a detected basket can never be labelled "hand-carried"
 - ✅ Queue zone (`--zone`): only people/baskets inside the queue polygon are counted — cashiers and passers-by are filtered out
 - ✅ API server (`server.py` + `queueiq_engine.py`): FastAPI + SSE, checkout feedback → live online learning, LED endpoint for an ESP32, connected to the `/live` dashboard in QueueIQ-FE
 - ⬜ Cross-frame tracking (ByteTrack) · Supabase persistence · ESP32 LED firmware

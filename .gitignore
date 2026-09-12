@@ -8,6 +8,7 @@ dataset/
 # bobot yang dibutuhkan demo ikut di-push supaya laptop demo tinggal clone
 !fullness_classifier.pt
 !basket_detector.pt
+!basket_world.pt
 !yolov8n.pt
 
 # hasil generate ulang-able
