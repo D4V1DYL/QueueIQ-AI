@@ -20,3 +20,6 @@ dataset_detect/
 
 # server runtime state (hasil belajar live, bisa di-reset lewat API)
 model_state.json
+
+# footage demo pihak ketiga untuk kamera virtual (fetch_demo_video.py)
+videos/

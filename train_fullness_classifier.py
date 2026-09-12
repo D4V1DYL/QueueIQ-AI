@@ -50,9 +50,12 @@ CLASS_NAMES = ["empty", "light", "medium", "full"]  # urutan harus konsisten
 def build_dataloaders(data_dir: str, batch_size: int = 16):
     # Augmentasi ringan untuk train (dataset kecil -> augmentasi bantu generalisasi)
     train_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        # crop acak + rotasi kecil: foto stok vs crop kamera overhead beda skala,
+        # augmentasi ini bikin model lebih tahan terhadap perbedaan itu
+        transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
         transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.RandomRotation(10),
+        transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.15),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
@@ -77,12 +80,17 @@ def build_dataloaders(data_dir: str, batch_size: int = 16):
     return train_loader, val_loader, train_ds.classes
 
 
-def build_model(num_classes: int):
+def build_model(num_classes: int, unfreeze_last: int = 0):
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
 
-    # Freeze semua layer feature extractor (gak dilatih ulang)
+    # Freeze feature extractor; opsional buka N blok terakhir supaya fitur
+    # ikut beradaptasi ke domain keranjang (dataset kecil -> jangan semua)
     for param in model.features.parameters():
         param.requires_grad = False
+    if unfreeze_last > 0:
+        for block in list(model.features)[-unfreeze_last:]:
+            for param in block.parameters():
+                param.requires_grad = True
 
     # Ganti classifier terakhir sesuai jumlah kelas kita (4 kelas fullness)
     model.classifier[1] = nn.Linear(model.last_channel, num_classes)
@@ -91,7 +99,7 @@ def build_model(num_classes: int):
 
 
 def train(model, train_loader, val_loader, epochs, lr, device):
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)  # label scrape agak bising
     # Hanya optimize parameter yang requires_grad=True (classifier terakhir)
     optimizer = optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()), lr=lr
@@ -155,13 +163,15 @@ def main():
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--unfreeze_last", type=int, default=0,
+                        help="Jumlah blok terakhir MobileNetV2 yang ikut dilatih (default 0)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Menggunakan device: {device}")
 
     train_loader, val_loader, classes = build_dataloaders(args.data_dir, args.batch_size)
-    model = build_model(num_classes=len(classes))
+    model = build_model(num_classes=len(classes), unfreeze_last=args.unfreeze_last)
 
     train(model, train_loader, val_loader, args.epochs, args.lr, device)
 

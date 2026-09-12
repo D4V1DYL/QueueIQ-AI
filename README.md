@@ -32,6 +32,7 @@ python -m venv .venv
 | — dengan zona antrian (hanya hitung orang di polygon) | `python detect_queue.py --image cctv.jpg --zone "130,40 330,40 330,330 130,330"` |
 | Simulasi online learning | `python online_learning_simulation.py` |
 | **Server API untuk dashboard** (`QueueIQ-FE` halaman `/live`) | `pip install -r requirements-server.txt` lalu `python server.py` |
+| Footage CCTV untuk kamera virtual di dashboard | `pip install yt-dlp` lalu `python fetch_demo_video.py` |
 
 ## Server API (sambungan ke frontend)
 
@@ -57,6 +58,17 @@ Endpoint: `GET /health` · `GET /api/lanes` · `POST /api/lanes/{id}/analyze`
 akurasi) · `POST /api/model/reset` · `POST /api/demo/scenario` `{"name": "seed"|"surge"|"cctv"|"clear"}`
 · `GET /api/led/{id}` (teks `green|amber|red|closed` untuk ESP32) · `GET /api/events` (SSE).
 
+**Kamera virtual (demo tanpa webcam/supermarket):** `python fetch_demo_video.py`
+mengunduh 2 footage CCTV kasir dari YouTube ke `videos/` (di-gitignore). Di
+dashboard `/live` video muncul di "Sample footage · play as virtual camera";
+server membaca 1 frame tiap 2 detik lewat pipeline yang sama seperti webcam
+(`POST /api/lanes/{id}/video`). Taruh file `.mp4` lain di `videos/` agar ikut muncul.
+
+**Pengaman feedback:** tombol *Done* memakai waktu terukur sejak shopper depan
+mulai dilayani; kalau < 15 detik (operator menekan saat demo) transaksi dianggap
+bukan checkout nyata dan model TIDAK di-update — pakai *Teach the model* dengan
+angka detik eksplisit.
+
 Foto contoh untuk galeri di dashboard diambil dari folder `examples/` (semua `.jpg/.png/.webp` selain `*_annotated`) — taruh foto antrian troli/keranjang sendiri di sana agar muncul sebagai contoh yang bisa diklik.
 
 Server hanya melayani klien loopback / IP privat LAN; persempit lagi dengan
@@ -68,10 +80,10 @@ Foto dimasukkan ke `dataset/raw/{empty,light,medium,full,no_basket_with_items}/`
 
 ## Status
 
-- ✅ Basket fullness classifier (MobileNetV2 transfer learning, 9.2 MB, 5.6 ms/gambar di GTX 1050 Ti)
+- ✅ Basket fullness classifier (MobileNetV2 transfer learning, 9.2 MB, 5.6 ms/gambar di GTX 1050 Ti). Latih ulang dari nol dengan data scrape (`scrape_images.py` → kurasi → `prepare_dataset.py` → `train_fullness_classifier.py --epochs 25 --lr 4e-4 --unfreeze_last 4`): 225 foto, val 5 kelas 56%, empty-vs-ada-isi 93%, 3 tingkat (kosong / sedikit / sedang-penuh) 80%, meleset ≤1 tingkat 98% — label foto stok memang bising, foto asli dari kamera sendiri akan jauh lebih baik
 - ✅ Prediksi waktu checkout — online linear regression, akurasi 74%→88% dalam 120 transaksi simulasi
 - ✅ Person detection + skor antrian (`detect_queue.py`): YOLOv8n pretrained → crop area bawaan per orang → fullness → estimasi tunggu → status lane 🟢🟡🔴
-- ✅ Basket detector fine-tuned (`finetune_basket_detector.py`): auto-label YOLO-World (zero-shot, tanpa anotasi manual) → fine-tune YOLOv8n — mAP50 0.887, precision 0.93; `detect_queue.py` otomatis memakainya bila `basket_detector.pt` ada
+- ✅ Basket detector fine-tuned (`finetune_basket_detector.py`): auto-label YOLO-World (zero-shot, tanpa anotasi manual) → fine-tune YOLOv8n — mAP50 0.887, precision 0.93 pada dataset asli; latih ulang dari data scrape (116 foto, 30 epoch CPU ±12 menit) memberi mAP50 0.82, precision 0.82; `detect_queue.py` dan `server.py` otomatis memakainya bila `basket_detector.pt` ada
 - ✅ Queue zone (`--zone`): hanya orang/keranjang di polygon area antrian yang dihitung — kasir & pengunjung lewat tersaring
 - ✅ Server API (`server.py` + `queueiq_engine.py`): FastAPI + SSE, feedback checkout → online learning live, endpoint LED untuk ESP32, tersambung ke dashboard `/live` di QueueIQ-FE
 - ⬜ Tracking antar-frame (ByteTrack) · Supabase persist · firmware LED ESP32

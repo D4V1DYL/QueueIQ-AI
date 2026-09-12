@@ -28,6 +28,10 @@ Endpoint utama (semua JSON kecuali disebut lain):
     POST /api/model/reset                {"warm_start": true}
     GET  /api/examples                   frame contoh bawaan repo
     POST /api/demo/scenario              {"name": "seed"|"surge"|"cctv"|"clear"}
+    GET  /api/videos                     footage demo di videos/ (kamera virtual)
+    POST /api/lanes/{id}/video           {"name": "x.mp4", "interval_sec": 2} ->
+                                         putar video lewat pipeline ke lane
+    POST /api/lanes/{id}/video/stop
     GET  /api/led            /api/led/{id}   warna lampu (untuk ESP32, text)
     GET  /api/events                     Server-Sent Events: lanes/log/model
 """
@@ -62,7 +66,10 @@ VERSION = "0.3.0"
 VENDOR = "DM Tech"
 ROOT = Path(__file__).resolve().parent
 EXAMPLES_DIR = ROOT / "examples"
+VIDEOS_DIR = ROOT / "videos"          # footage demo (di-gitignore) -> kamera virtual
+VIDEO_EXT = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 LANE_NAMES = {1: "Lane 01", 2: "Lane 02", 3: "Lane 03", 4: "Lane 04"}
+MIN_MEASURED_FEEDBACK_SEC = 15.0   # Done < 15 dtk = bukan checkout nyata, jangan belajar
 
 
 
@@ -84,6 +91,12 @@ class ResetBody(BaseModel):
 
 class ScenarioBody(BaseModel):
     name: str
+
+
+class VideoBody(BaseModel):
+    name: str
+    interval_sec: float = 2.0     # 1 frame dianalisis tiap N detik video & jam nyata
+    loop: bool = True
 
 
 # =====================================================================
@@ -116,6 +129,9 @@ class Lane:
     last_analyzed_at: Optional[float] = None
     front_started_at: Optional[float] = None
     completed: int = 0
+    video_name: Optional[str] = None
+    video_task: Optional[asyncio.Task] = None
+    video_token: object = None      # identitas pemutaran aktif (untuk cleanup aman)
 
     def remaining_of(self, i: int, now: float) -> float:
         s = self.shoppers[i]
@@ -157,6 +173,7 @@ class Lane:
             "n_detected_total": (self.last_result or {}).get("n_detected_total"),
             "inference_ms": (self.last_result or {}).get("inference_ms"),
             "completed": self.completed,
+            "video_source": self.video_name,
         }
 
 
@@ -305,6 +322,15 @@ class Store:
         lane.front_started_at = now if lane.shoppers else None
         lane.completed += 1
         learned = None
+        skipped_reason = None
+        # Pengaman: waktu TERUKUR (tombol Done) yang terlalu pendek hampir pasti
+        # bukan checkout sungguhan (operator menekan Done saat demo) -> jangan
+        # dipakai belajar. Angka eksplisit ("Teach the model") tetap diterima.
+        if actual_sec is None and (measured is None or measured < MIN_MEASURED_FEEDBACK_SEC):
+            skipped_reason = (f"measured {measured:.0f}s is under {MIN_MEASURED_FEEDBACK_SEC}s — "
+                              f"not a real checkout, model left unchanged"
+                              if measured is not None else "no timing available")
+            actual = None
         if actual is not None and actual >= 3:
             learned = self.engine.regressor.update(s.est_items, float(actual), source="live")
             self.engine.regressor.save()
@@ -316,10 +342,12 @@ class Store:
                 kind="learn", lane_id=lane.id)
             await self.push_model()
         else:
-            await self.add_log(f"{lane.name}: {s.id} checked out (no timing feedback).",
+            await self.add_log(f"{lane.name}: {s.id} checked out — "
+                               f"{skipped_reason or 'no timing feedback'}.",
                                kind="info", lane_id=lane.id)
         await self.push_lanes()
-        return {"shopper": s.__dict__, "actual_sec": actual, "measured_sec": measured, "learned": learned}
+        return {"shopper": s.__dict__, "actual_sec": actual, "measured_sec": measured,
+                "learned": learned, "skipped_reason": skipped_reason}
 
     def add_scenario_shopper(self, lane: Lane, fullness: str, conf: float = 0.9):
         items = FULLNESS_TO_ITEMS[fullness]
@@ -330,6 +358,57 @@ class Store:
             source="scenario", detected_at=now))
         if lane.front_started_at is None:
             lane.front_started_at = now
+
+    # --- kamera virtual: putar file video lewat pipeline ---
+    async def play_video(self, lane: Lane, path: Path, interval: float, loop: bool):
+        """Baca 1 frame tiap `interval` detik (waktu video == waktu nyata) dan
+        analisis ke lane seolah-olah datang dari kamera overhead."""
+        import cv2  # lazy: hanya dibutuhkan untuk fitur ini
+
+        token = object()
+        lane.video_token = token
+        cap = cv2.VideoCapture(str(path))
+        if not cap.isOpened():
+            await self.add_log(f"{lane.name}: cannot open video {path.name}", kind="system", lane_id=lane.id)
+            lane.video_name, lane.video_task = None, None
+            await self.push_lanes()
+            return
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        step = max(1, int(round(fps * interval)))
+        await self.add_log(f"{lane.name}: virtual camera started — {path.name} "
+                           f"({total / fps:.0f}s, 1 frame every {interval:g}s)", kind="system", lane_id=lane.id)
+        idx = 0
+        try:
+            while True:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ok, frame = cap.read()
+                if not ok:
+                    if not loop or total == 0:
+                        break
+                    idx = 0
+                    continue
+                img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                await self.analyze_into_lane(lane, img, f"video:{path.name}@{idx / fps:.0f}s")
+                idx += step
+                if total and idx >= total:
+                    if not loop:
+                        break
+                    idx = 0
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            cap.release()
+            if lane.video_token is token:   # belum digantikan pemutaran lain
+                lane.video_name, lane.video_task, lane.video_token = None, None, None
+                await self.add_log(f"{lane.name}: virtual camera stopped.", kind="system", lane_id=lane.id)
+                await self.push_lanes()
+
+    def stop_video(self, lane: Lane):
+        """Batalkan task pemutaran; cleanup & log dilakukan di finally play_video."""
+        if lane.video_task and not lane.video_task.done():
+            lane.video_task.cancel()
 
     async def tick(self):
         """Loop 1 detik: hitung mundur & auto-advance bila front shopper selesai
@@ -521,6 +600,7 @@ def create_app(mode: str = "auto") -> FastAPI:
         name = body.name
         if name == "clear":
             for l in store.lanes.values():
+                store.stop_video(l)
                 l.shoppers, l.front_started_at, l.frame, l.last_result = [], None, None, None
             await store.add_log("All lanes cleared.", kind="system")
         elif name == "seed":
@@ -556,6 +636,47 @@ def create_app(mode: str = "auto") -> FastAPI:
             raise HTTPException(400, "Unknown scenario: seed | surge | cctv | clear")
         await store.push_lanes()
         return store.snapshot()
+
+    # ---------------- video sebagai kamera virtual ----------------
+    def _list_videos():
+        if not VIDEOS_DIR.is_dir():
+            return []
+        return [{"name": p.name, "size_mb": round(p.stat().st_size / 1e6, 1)}
+                for p in sorted(VIDEOS_DIR.iterdir()) if p.suffix.lower() in VIDEO_EXT]
+
+    @app.get("/api/videos")
+    async def videos():
+        return _list_videos()
+
+    @app.get("/api/videos/{name}")
+    async def video_file(name: str):
+        p = VIDEOS_DIR / Path(name).name
+        if not p.exists() or p.suffix.lower() not in VIDEO_EXT:
+            raise HTTPException(404)
+        return Response(p.read_bytes(), media_type="video/mp4")
+
+    @app.post("/api/lanes/{lane_id}/video")
+    async def start_video(lane_id: int, body: VideoBody):
+        lane = store.lane(lane_id)
+        if not lane.open:
+            raise HTTPException(409, f"{lane.name} is closed")
+        p = VIDEOS_DIR / Path(body.name).name
+        if not p.exists() or p.suffix.lower() not in VIDEO_EXT:
+            raise HTTPException(404, f"Video '{body.name}' not found in videos/")
+        if not (0.5 <= body.interval_sec <= 30):
+            raise HTTPException(400, "interval_sec must be between 0.5 and 30")
+        store.stop_video(lane)
+        lane.video_name = p.name
+        lane.video_task = asyncio.create_task(store.play_video(lane, p, body.interval_sec, body.loop))
+        await store.push_lanes()
+        return lane.to_dict(time.time())
+
+    @app.post("/api/lanes/{lane_id}/video/stop")
+    async def stop_video(lane_id: int):
+        lane = store.lane(lane_id)
+        store.stop_video(lane)
+        await store.push_lanes()
+        return lane.to_dict(time.time())
 
     # ---------------- LED (ESP32) ----------------
     @app.get("/api/led")
