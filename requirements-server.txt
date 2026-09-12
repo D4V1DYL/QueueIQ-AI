@@ -5,5 +5,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 pillow
-opencv-python        # virtual camera: read frames from videos/*.mp4
+# headless: the virtual camera only decodes frames, and the GUI build would drag
+# in libGL, which slim server images do not have
+opencv-python-headless
 yt-dlp               # fetch_demo_video.py (optional)

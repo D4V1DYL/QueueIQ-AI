@@ -36,15 +36,19 @@ the safer bet at a venue with no internet.
 git clone https://github.com/D4V1DYL/QueueIQ-AI.git
 cd QueueIQ-AI
 python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
-.venv/Scripts/pip install -r requirements-server.txt
+.venv/Scripts/pip install -r requirements.txt -r requirements-server.txt
 .venv/Scripts/python server.py
 ```
 
-On Linux/macOS use `.venv/bin/pip` and `.venv/bin/python`. The `cu126` index is
-only needed for Pascal GPUs (GTX 10xx); on a CPU-only machine plain
-`pip install -r requirements.txt` is fine — inference runs at roughly
-150–400 ms per frame on CPU, which is enough for the demo.
+On Linux/macOS use `.venv/bin/pip` and `.venv/bin/python`. PyTorch is not
+pinned to a CUDA build, so pip picks the right wheel on any platform and
+inference runs at roughly 150–400 ms per frame on CPU — enough for the demo.
+Only a Pascal GPU (GTX 10xx) needs an explicit CUDA build, because PyTorch
+dropped Pascal support in cu128 and later:
+
+```bash
+.venv/Scripts/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+```
 
 All model weights (`yolov8n.pt`, `basket_world.pt`, `fullness_classifier.pt`,
 `class_names.txt`, `basket_detector.pt`) and the two demo videos ship inside the
@@ -148,11 +152,11 @@ Three things have to be arranged, in this order.
 Disk: PyTorch alone unpacks to about **1.2 GB**, plus roughly 46 MB of weights.
 A 50 GB boot volume is more than enough.
 
-On ARM, install PyTorch from plain PyPI — the `cu126` index in
-`requirements.txt` is for Pascal GPUs on x86 and does not apply:
+Nothing special is needed on ARM: `requirements.txt` does not pin a CUDA
+build, and PyTorch publishes `manylinux_2_28_aarch64` wheels, so the normal
+install works:
 
 ```bash
-pip install torch torchvision --index-url https://pypi.org/simple
 pip install -r requirements.txt -r requirements-server.txt
 ```
 
@@ -346,6 +350,49 @@ set it when a proxy you control really does set that header.
 
 ---
 
+## Path D — a PaaS builder (Nixpacks: Coolify, Railway, Dokploy, Render)
+
+Both repositories build with the stock Nixpacks detection, no Dockerfile and no
+`nixpacks.toml`:
+
+| Repository | Detected as | Install | Start |
+|---|---|---|---|
+| `QueueIQ-AI` | Python | `pip install -r requirements.txt` | `python server.py` |
+| `QueueIQ-FE` | Node | `npm ci` + `npm run build` | `npm start` |
+
+Three things make that work, and all three are already in the repositories:
+
+- **`requirements.txt` pins no CUDA build.** A `+cu126` wheel only exists on
+  PyTorch's own index for x86, so pinning one fails on ARM and on any builder
+  that installs from PyPI. Plain `torch` resolves to the correct wheel.
+- **Leave the install command at its default.** Nixpacks creates the virtualenv
+  as part of its own install step; a custom `install_command` replaces that step,
+  so the venv is never created and `pip` is not on the path.
+- **`$PORT` is honoured.** Both services read the port the platform injects and
+  bind `0.0.0.0` when it is present, so no start-command override is needed.
+  `requirements-server.txt` uses `opencv-python-headless`, which does not need
+  the `libGL` system library that slim images lack.
+
+Set these on the API service, since a PaaS reaches it through its own proxy:
+
+```
+QUEUEIQ_PUBLIC=1
+QUEUEIQ_TRUST_PROXY=1
+QUEUEIQ_MODELS_DIR=/data/models      # optional, if you mount a volume
+```
+
+Everything in Path C about HTTPS still applies: the dashboard and the API have to
+answer on **one hostname**, with `/api/*` and `/health` routed to the Python
+service, or the browser blocks the calls as mixed content. Most PaaS front-ends
+can do that with a path rule; if yours cannot, deploy the dashboard and put the
+API on the same hostname behind the Caddy configuration above.
+
+The weights ship in the repository, so a plain build already reaches
+`tier=full`. Mount a volume and run `python fetch_models.py` only if you would
+rather keep them out of the image.
+
+---
+
 ## Configuration reference
 
 | Variable | Default | Meaning |
@@ -359,6 +406,7 @@ set it when a proxy you control really does set that header.
 | `QUEUEIQ_TRUST_PROXY` | unset | `1` reads the caller's address from `X-Forwarded-For` instead of the socket |
 | `QUEUEIQ_MODELS_DIR` | the repo folder | Where the weights are loaded from; falls back to the repo per file |
 | `QUEUEIQ_MODELS_URL` | unset | Base URL `fetch_models.py` downloads the trained weights from |
+| `PORT` | unset | PaaS convention; when set, the server uses it and binds `0.0.0.0` |
 | `YOLO_OFFLINE` | set to `1` by `server.py` | Stops Ultralytics contacting the network |
 
 The dashboard has no build-time configuration. The API address comes from the
@@ -404,3 +452,6 @@ laptop-only path needs no network at all.
 | Public deployment: page loads, lanes never update | The proxy is buffering Server-Sent Events. Caddy needs `flush_interval -1`, nginx needs `proxy_buffering off`. |
 | Public deployment: nothing answers on 443 | Two firewalls. Check the OCI security list **and** `firewall-cmd --list-all` / `iptables -L INPUT` on the instance. |
 | `python fetch_models.py` reports MISSING | The three trained files are not public. Copy them with scp or serve them through `QUEUEIQ_MODELS_URL`. |
+| Nixpacks build fails: `pip: command not found` | A custom `install_command` was set. Nixpacks creates the virtualenv in its own install step, so leave that field empty. |
+| Nixpacks build fails resolving `torch` | An old checkout still pins `torch==…+cu126`. Those wheels exist only on PyTorch's x86 index; pull the current `requirements.txt`. |
+| `ImportError: libGL.so.1` | An old `requirements-server.txt` with `opencv-python`. The current one uses `opencv-python-headless`. |

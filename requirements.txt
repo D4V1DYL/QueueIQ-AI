@@ -1,9 +1,14 @@
-# Install with the PyTorch cu126 index (cu126 is REQUIRED — cu128+ builds no
-# longer support Pascal GPUs such as the GTX 1050 Ti):
-#   python -m venv .venv
-#   .venv/bin/pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
-torch==2.14.0+cu126
-torchvision==0.29.0+cu126
+# PyTorch is resolved by pip for whatever platform it runs on:
+#   linux aarch64 (Oracle Ampere)  -> CPU wheels, which is what a server wants
+#   windows / linux x86_64         -> CPU wheels from PyPI
+# Do not pin a "+cuXXX" build here: those wheels only exist on PyTorch's own
+# index for x86, so pinning one makes the install fail everywhere else.
+#
+# For a Pascal GPU (GTX 10xx) install the CUDA build explicitly instead, because
+# PyTorch builds for cu128+ dropped Pascal support:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+torch
+torchvision
 pillow
 numpy
 pandas

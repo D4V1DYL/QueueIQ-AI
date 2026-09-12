@@ -737,9 +737,16 @@ def create_app(mode: str = "auto") -> FastAPI:
 def main():
     import uvicorn
     parser = argparse.ArgumentParser(description="QueueIQ Vision API")
-    parser.add_argument("--host", default=os.environ.get("QUEUEIQ_HOST", "127.0.0.1"),
-                        help="127.0.0.1 (default) or 0.0.0.0 for the LAN")
-    parser.add_argument("--port", type=int, default=int(os.environ.get("QUEUEIQ_PORT", "8000")))
+    # PaaS builders (Nixpacks, Heroku, Railway, Coolify) hand the port in $PORT
+    # and expect the process to listen on every interface, so honour that
+    # convention when it is present without changing the local default.
+    paas_port = os.environ.get("PORT", "").strip()
+    parser.add_argument("--host",
+                        default=os.environ.get("QUEUEIQ_HOST") or ("0.0.0.0" if paas_port else "127.0.0.1"),
+                        help="127.0.0.1 (default) or 0.0.0.0 for the LAN; "
+                             "defaults to 0.0.0.0 when $PORT is set")
+    parser.add_argument("--port", type=int,
+                        default=int(os.environ.get("QUEUEIQ_PORT") or paas_port or 8000))
     parser.add_argument("--mode", choices=["auto", "mock"], default=os.environ.get("QUEUEIQ_MODE", "auto"))
     args = parser.parse_args()
     app = create_app(mode=args.mode)
