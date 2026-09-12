@@ -1,38 +1,41 @@
 """
 train_fullness_classifier.py
 
-Image classification untuk basket fullness (empty/light/medium/full)
-pakai TRANSFER LEARNING dari MobileNetV2 pretrained (ImageNet).
+Image classification for basket fullness (empty/light/medium/full/...)
+using TRANSFER LEARNING from MobileNetV2 pretrained on ImageNet.
 
-Kenapa MobileNetV2 + transfer learning?
-- Cocok untuk dataset kecil (80-150 gambar cukup), karena cuma melatih
-  ulang layer terakhir, bukan seluruh network dari nol.
-- Ringan & cepat, jalan di CPU biasa (gak wajib GPU) -- penting untuk demo
-  hackathon di laptop.
+Why MobileNetV2 + transfer learning?
+- Suits small datasets (80-150 images are enough) because only the last
+  classifier layer is retrained (optionally the last few feature blocks),
+  not the whole network from scratch.
+- Light and fast, runs on a normal CPU (no GPU required) -- important for a
+  hackathon demo on a laptop.
 
-CARA PAKAI:
-1. Install dependency (di laptop/Colab, BUKAN di sini):
+USAGE:
+1. Install the dependencies:
        pip install torch torchvision pillow
 
-2. Susun folder foto seperti ini:
+2. Arrange the photos like this:
        dataset/
          train/
-           empty/   -> foto-foto basket kosong
-           light/   -> foto-foto isi sedikit
-           medium/  -> foto-foto isi sedang
-           full/    -> foto-foto isi penuh
+           empty/   -> photos of empty baskets
+           light/   -> lightly filled
+           medium/  -> half full
+           full/    -> full
          val/
            empty/
            light/
            medium/
            full/
-   (val = subset kecil buat validasi, ambil ~20% dari total foto per kelas)
+   (val = a small validation subset, about 20% of the photos per class)
 
-3. Jalankan:
+3. Run:
        python train_fullness_classifier.py --data_dir ./dataset --epochs 15
+   With noisy scraped data, partially unfreezing the backbone helps:
+       python train_fullness_classifier.py --data_dir ./dataset --epochs 25 --lr 4e-4 --unfreeze_last 4
 
-4. Model hasil training tersimpan di fullness_classifier.pt
-   Pakai predict.py (file terpisah) untuk inference ke foto baru.
+4. The trained model is saved to fullness_classifier.pt (+ class_names.txt).
+   Use predict.py (separate file) for inference on new photos.
 """
 
 import argparse
@@ -44,14 +47,14 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 
-CLASS_NAMES = ["empty", "light", "medium", "full"]  # urutan harus konsisten
+CLASS_NAMES = ["empty", "light", "medium", "full"]  # order must stay consistent
 
 
 def build_dataloaders(data_dir: str, batch_size: int = 16):
-    # Augmentasi ringan untuk train (dataset kecil -> augmentasi bantu generalisasi)
+    # Light augmentation for training (small dataset -> augmentation helps generalisation)
     train_transform = transforms.Compose([
-        # crop acak + rotasi kecil: foto stok vs crop kamera overhead beda skala,
-        # augmentasi ini bikin model lebih tahan terhadap perbedaan itu
+        # random crop + small rotation: stock photos and overhead-camera crops differ
+        # in scale, this augmentation makes the model more robust to that
         transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
@@ -71,8 +74,8 @@ def build_dataloaders(data_dir: str, batch_size: int = 16):
     train_ds = datasets.ImageFolder(train_dir, transform=train_transform)
     val_ds = datasets.ImageFolder(val_dir, transform=val_transform)
 
-    # Pastikan urutan kelas sesuai CLASS_NAMES (ImageFolder sort alfabetis otomatis)
-    print(f"Kelas terdeteksi: {train_ds.classes}")
+    # ImageFolder sorts classes alphabetically; the order is saved to class_names.txt
+    print(f"Classes found: {train_ds.classes}")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
@@ -83,8 +86,8 @@ def build_dataloaders(data_dir: str, batch_size: int = 16):
 def build_model(num_classes: int, unfreeze_last: int = 0):
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
 
-    # Freeze feature extractor; opsional buka N blok terakhir supaya fitur
-    # ikut beradaptasi ke domain keranjang (dataset kecil -> jangan semua)
+    # Freeze the feature extractor; optionally unfreeze the last N blocks so the
+    # features adapt to the basket domain (small dataset -> never all of them)
     for param in model.features.parameters():
         param.requires_grad = False
     if unfreeze_last > 0:
@@ -92,15 +95,15 @@ def build_model(num_classes: int, unfreeze_last: int = 0):
             for param in block.parameters():
                 param.requires_grad = True
 
-    # Ganti classifier terakhir sesuai jumlah kelas kita (4 kelas fullness)
+    # Replace the final classifier with one sized for our fullness classes
     model.classifier[1] = nn.Linear(model.last_channel, num_classes)
 
     return model
 
 
 def train(model, train_loader, val_loader, epochs, lr, device):
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)  # label scrape agak bising
-    # Hanya optimize parameter yang requires_grad=True (classifier terakhir)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)  # scraped labels are somewhat noisy
+    # Only optimise parameters with requires_grad=True
     optimizer = optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()), lr=lr
     )
@@ -137,10 +140,10 @@ def train(model, train_loader, val_loader, epochs, lr, device):
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save(model.state_dict(), "fullness_classifier.pt")
-            print(f"  -> model tersimpan (val_acc terbaik: {val_acc:.3f})")
+            print(f"  -> model saved (best val_acc: {val_acc:.3f})")
 
-    print(f"\nTraining selesai. Best val accuracy: {best_val_acc:.3f}")
-    print("Model tersimpan di: fullness_classifier.pt")
+    print(f"\nTraining finished. Best val accuracy: {best_val_acc:.3f}")
+    print("Model saved to: fullness_classifier.pt")
 
 
 @torch.no_grad()
@@ -159,23 +162,23 @@ def evaluate(model, loader, device):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, required=True,
-                         help="Path ke folder dataset (berisi train/ dan val/)")
+                         help="Path to the dataset folder (containing train/ and val/)")
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--unfreeze_last", type=int, default=0,
-                        help="Jumlah blok terakhir MobileNetV2 yang ikut dilatih (default 0)")
+                        help="Number of trailing MobileNetV2 feature blocks to train too (default 0)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Menggunakan device: {device}")
+    print(f"Using device: {device}")
 
     train_loader, val_loader, classes = build_dataloaders(args.data_dir, args.batch_size)
     model = build_model(num_classes=len(classes), unfreeze_last=args.unfreeze_last)
 
     train(model, train_loader, val_loader, args.epochs, args.lr, device)
 
-    # Simpan mapping kelas juga, supaya predict.py tahu urutan class index -> nama
+    # Save the class mapping too, so predict.py knows class index -> name
     with open("class_names.txt", "w") as f:
         f.write("\n".join(classes))
 

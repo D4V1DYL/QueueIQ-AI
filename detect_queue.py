@@ -1,34 +1,34 @@
 """
 detect_queue.py
 
-Pipeline deteksi antrian kasir (MASTER_PROMPT §2 poin 1-5):
+Checkout-queue detection pipeline (MASTER_PROMPT §2, items 1-5):
 
-    frame kamera
-      -> YOLO pretrained (COCO): deteksi PERSON        [tanpa training ulang]
-      -> crop area bawaan tiap person (badan bagian bawah, tempat
-         keranjang/barang biasanya dibawa)
+    camera frame
+      -> pretrained YOLO (COCO): PERSON detection      [no retraining]
+      -> crop the carry region of each person (lower body, where a
+         basket or the items are usually carried)
       -> basket fullness classifier (fullness_classifier.pt)
-      -> estimasi waktu checkout per orang (intercept + slope x item)
-      -> skor lane + status lampu: hijau / kuning / merah
+      -> estimated checkout time per person (intercept + slope x items)
+      -> lane score + light status: green / amber / red
 
-CARA PAKAI:
+USAGE:
     python detect_queue.py --image examples/antrian_cctv.jpg
-    python detect_queue.py --image dataset/unsorted/          (semua foto folder)
-    python detect_queue.py --video rekaman.mp4                (proses per detik)
-    python detect_queue.py --image foto.jpg --no-annotate     (tanpa simpan gambar)
+    python detect_queue.py --image dataset/unsorted/          (every photo in the folder)
+    python detect_queue.py --video recording.mp4              (one frame per second)
+    python detect_queue.py --image photo.jpg --no-annotate    (do not save the image)
     python detect_queue.py --image cctv.jpg --zone "130,40 330,40 330,330 130,330"
-        (hanya hitung orang di dalam polygon area antrian; titik = piksel x,y)
+        (count only people inside the queue polygon; points are x,y pixels)
 
-Output: ringkasan antrian di terminal + gambar beranotasi *_annotated.jpg.
+Output: a queue summary in the terminal + an annotated image *_annotated.jpg.
 
-Catatan MVP:
-- COCO tidak punya kelas "shopping basket", jadi keranjang TIDAK dideteksi
-  langsung; fullness dinilai dari crop area bawaan tiap person. Fine-tune
-  basket detector (30-50 foto, lihat MASTER_PROMPT §3) adalah upgrade
-  berikutnya - tinggal ganti sumber kotak crop, sisa pipeline tidak berubah.
-- Estimasi waktu memakai parameter hasil online learning terakhir
-  (online_learning_results.csv). Saat sistem live, parameter ini terus
-  ter-update tiap transaksi selesai.
+MVP notes:
+- COCO has no "shopping basket" class, so baskets are NOT detected directly;
+  fullness is rated from each person's carry-region crop. The fine-tuned
+  basket detector (30-50 photos, see MASTER_PROMPT §3) is the next upgrade -
+  it only changes the source of the crop box, the rest of the pipeline stays.
+- The time estimate uses the latest online-learning parameters
+  (online_learning_results.csv). When the system is live these parameters
+  keep updating after every completed transaction.
 """
 
 import argparse
@@ -41,34 +41,34 @@ from PIL import Image, ImageDraw, ImageFont
 from torchvision import models, transforms
 from ultralytics import YOLO
 
-# ---------------- konfigurasi ----------------
-YOLO_WEIGHTS = "yolov8n.pt"          # nano: 6MB, cukup untuk MVP
-BASKET_WEIGHTS = "basket_detector.pt"  # hasil finetune_basket_detector.py (opsional)
-PERSON_CONF = 0.35                    # ambang confidence deteksi person
-BASKET_CONF = 0.35                    # ambang confidence deteksi keranjang
+# ---------------- configuration ----------------
+YOLO_WEIGHTS = "yolov8n.pt"          # nano: 6 MB, enough for the MVP
+BASKET_WEIGHTS = "basket_detector.pt"  # output of finetune_basket_detector.py (optional)
+PERSON_CONF = 0.35                    # person detection confidence threshold
+BASKET_CONF = 0.35                    # basket detection confidence threshold
 FULLNESS_MODEL = "fullness_classifier.pt"
 CLASS_NAMES_FILE = "class_names.txt"
 RESULTS_CSV = "online_learning_results.csv"
 
-# fullness -> perkiraan jumlah item (titik tengah rentang label)
+# fullness -> approximate item count (midpoint of the label's range)
 FULLNESS_TO_ITEMS = {
     "empty": 0, "light": 3, "medium": 10, "full": 23,
     "no_basket_with_items": 2,
 }
 
-# ambang status lane (detik total antrian) -> warna lampu
-THRESHOLD_GREEN = 120     # < 2 menit
-THRESHOLD_YELLOW = 240    # < 4 menit; di atasnya merah (selaras dashboard & server.py)
+# lane status thresholds (total queue seconds) -> light colour
+THRESHOLD_GREEN = 120     # < 2 minutes
+THRESHOLD_YELLOW = 240    # < 4 minutes; red above (matches the dashboard & server.py)
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def load_regression_params():
-    """Ambil intercept/slope terakhir dari hasil online learning."""
+    """Take the latest intercept/slope from the online-learning results."""
     import csv
     path = Path(RESULTS_CSV)
     if not path.exists():
-        return 20.0, 7.0  # fallback: nilai formula sintetis
+        return 20.0, 7.0  # fallback: the synthetic formula's values
     with open(path) as f:
         last = list(csv.DictReader(f))[-1]
     return float(last["current_intercept"]), float(last["current_slope"])
@@ -89,8 +89,8 @@ def load_fullness_model(device):
 
 
 def carry_region(person_box, img_w, img_h):
-    """Area bawaan: separuh bawah kotak person, dilebarkan sedikit ke samping
-    (keranjang dijinjing di samping badan)."""
+    """Carry region: the lower half of the person box, widened sideways
+    (baskets are carried beside the body)."""
     x1, y1, x2, y2 = person_box
     h = y2 - y1
     pad = (x2 - x1) * 0.35
@@ -104,10 +104,10 @@ def carry_region(person_box, img_w, img_h):
 
 def status_lane(total_sec):
     if total_sec < THRESHOLD_GREEN:
-        return "green", "HIJAU"
+        return "green", "GREEN"
     if total_sec < THRESHOLD_YELLOW:
-        return "yellow", "KUNING"
-    return "red", "MERAH"
+        return "yellow", "AMBER"
+    return "red", "RED"
 
 
 STATUS_RGB = {"green": (40, 200, 80), "yellow": (240, 200, 40), "red": (230, 60, 50)}
@@ -118,24 +118,24 @@ def center(box):
 
 
 def foot_point(box):
-    """Titik kaki (tengah-bawah kotak person) — representasi posisi orang
-    di lantai, lebih akurat dari center untuk kamera overhead miring."""
+    """Foot point (bottom-centre of the person box) — the person's position
+    on the floor, more accurate than the centre for an angled overhead camera."""
     return ((box[0] + box[2]) / 2, box[3])
 
 
 def parse_zone(s):
-    """'x1,y1 x2,y2 ...' -> list titik polygon."""
+    """'x1,y1 x2,y2 ...' -> list of polygon points."""
     pts = []
     for tok in s.split():
         x, y = tok.split(",")
         pts.append((float(x), float(y)))
     if len(pts) < 3:
-        raise ValueError("Zone butuh minimal 3 titik")
+        raise ValueError("A zone needs at least 3 points")
     return pts
 
 
 def in_polygon(pt, poly):
-    """Ray casting: apakah titik di dalam polygon."""
+    """Ray casting: is the point inside the polygon."""
     x, y = pt
     inside = False
     j = len(poly) - 1
@@ -159,11 +159,11 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
     if zone:
         persons = [p for p in persons if in_polygon(foot_point(p), zone)]
 
-    # deteksi keranjang (kalau detector hasil fine-tune tersedia),
-    # lalu pasangkan tiap keranjang ke person terdekat
+    # basket detection (when the fine-tuned detector is available),
+    # then pair every basket with its nearest person
     basket_of = {}
-    orphan_baskets = []   # keranjang terdeteksi tapi tak ada person di frame
-                          # (orang tertutup rak / di luar frame) -> tetap dihitung
+    orphan_baskets = []   # baskets detected with no person in frame
+                          # (person hidden by a shelf / out of frame) -> still counted
     if basket_yolo is not None:
         bdet = basket_yolo.predict(img, conf=BASKET_CONF, verbose=False)[0]
         for b in bdet.boxes:
@@ -177,7 +177,7 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
             nearest = min(range(len(persons)), key=lambda i: (
                 (center(persons[i])[0] - bc[0]) ** 2 +
                 (center(persons[i])[1] - bc[1]) ** 2))
-            # simpan keranjang ber-confidence tertinggi per person
+            # keep the highest-confidence basket per person
             if nearest not in basket_of or float(b.conf) > basket_of[nearest][1]:
                 basket_of[nearest] = (bbox, float(b.conf))
 
@@ -190,7 +190,7 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
         if basket_box is not None:
             crop_box, src = basket_box, "basket"
         else:
-            crop_box, src = carry_region(box, w, h), "area-bawaan"
+            crop_box, src = carry_region(box, w, h), "carry-region"
         crop = img.crop(crop_box)
         x = ftf(crop).unsqueeze(0).to(device)
         with torch.no_grad():
@@ -209,13 +209,13 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
     color, color_id = status_lane(total)
 
     print(f"\n{Path(img_path).name}")
-    extra = f" (dari {n_all} terdeteksi, sisanya di luar zona)" if zone and n_all != len(rows) else ""
-    print(f"  antrian : {len(rows)} orang{extra}")
+    extra = f" (of {n_all} detected, the rest outside the zone)" if zone and n_all != len(rows) else ""
+    print(f"  queue : {len(rows)} shoppers{extra}")
     for i, r in enumerate(rows, 1):
         print(f"    #{i} {r['fullness']:<22} ({r['conf']:.0%}) "
-              f"[{r['source']}]  ~{r['est_items']} item -> {r['est_sec']:.0f} dtk")
-    print(f"  estimasi total tunggu : {total:.0f} dtk ({total/60:.1f} mnt)")
-    print(f"  status lane           : {color_id} [{color}]")
+              f"[{r['source']}]  ~{r['est_items']} items -> {r['est_sec']:.0f} s")
+    print(f"  estimated total wait : {total:.0f} s ({total/60:.1f} min)")
+    print(f"  lane status          : {color_id} [{color}]")
 
     if annotate and rows:
         vis = img.copy()
@@ -228,13 +228,13 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
             d.text((r["person_box"][0] + 4, r["person_box"][1] + 4),
                    f"#{i} {r['fullness'][:8]} {r['est_sec']:.0f}s",
                    fill=(0, 180, 255))
-        # banner status lane
+        # lane status banner
         d.rectangle((0, 0, w, 26), fill=STATUS_RGB[color])
-        d.text((8, 6), f"LANE {color_id} | {len(rows)} orang | "
-                       f"~{total:.0f} dtk", fill=(0, 0, 0))
+        d.text((8, 6), f"LANE {color_id} | {len(rows)} shoppers | "
+                       f"~{total:.0f} s", fill=(0, 0, 0))
         out = Path(img_path).with_name(Path(img_path).stem + "_annotated.jpg")
         vis.save(out, quality=90)
-        print(f"  anotasi -> {out}")
+        print(f"  annotated -> {out}")
 
     return {"n_person": len(rows), "total_sec": total, "status": color, "rows": rows}
 
@@ -242,12 +242,12 @@ def analyze_image(img_path, yolo, fmodel, fclasses, ftf, device,
 def main():
     parser = argparse.ArgumentParser()
     src = parser.add_mutually_exclusive_group(required=True)
-    src.add_argument("--image", type=str, help="File gambar atau folder")
-    src.add_argument("--video", type=str, help="File video (dianalisis 1 frame/detik)")
+    src.add_argument("--image", type=str, help="Image file or folder")
+    src.add_argument("--video", type=str, help="Video file (analysed at 1 frame/second)")
     parser.add_argument("--no-annotate", action="store_true")
     parser.add_argument("--zone", type=str, default=None,
-                        help='Polygon area antrian: "x1,y1 x2,y2 x3,y3 ..." '
-                             "(piksel). Hanya orang/keranjang di dalamnya yang dihitung.")
+                        help='Queue-area polygon: "x1,y1 x2,y2 x3,y3 ..." '
+                             "(pixels). Only people/baskets inside it are counted.")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -256,8 +256,8 @@ def main():
     fmodel, fclasses, ftf = load_fullness_model(device)
     intercept, slope = load_regression_params()
     zone = parse_zone(args.zone) if args.zone else None
-    print(f"device={device} | model waktu: {intercept:.1f} + {slope:.2f} x item | "
-          f"basket detector: {'ON (fine-tuned)' if basket_yolo else 'OFF (pakai area bawaan)'}")
+    print(f"device={device} | time model: {intercept:.1f} + {slope:.2f} x items | "
+          f"basket detector: {'ON (fine-tuned)' if basket_yolo else 'OFF (carry region)'}")
 
     if args.image:
         p = Path(args.image)
@@ -268,7 +268,7 @@ def main():
                           intercept, slope, annotate=not args.no_annotate,
                           basket_yolo=basket_yolo, zone=zone)
     else:
-        # video: ekstrak 1 fps ke folder sementara lalu proses per frame
+        # video: extract 1 fps into a temp folder, then process frame by frame
         import subprocess, tempfile
         with tempfile.TemporaryDirectory() as td:
             subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",

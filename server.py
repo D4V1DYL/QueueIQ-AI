@@ -1,38 +1,37 @@
 """
 server.py — QueueIQ Vision API
 
-Jembatan antara pipeline AI (queueiq_engine.py) dan dashboard Next.js
-(QueueIQ-FE, halaman /live). Satu proses Python, tanpa database: status lane
-disimpan di memori, parameter model online-learning dipersist ke
-model_state.json.
+Bridge between the AI pipeline (queueiq_engine.py) and the Next.js dashboard
+(QueueIQ-FE, page /live). One Python process, no database: lane state lives in
+memory, the online-learning model parameters are persisted to model_state.json.
 
-    python server.py                       # auto: pakai model yang tersedia
-    python server.py --mode mock           # tanpa torch, demo UI saja
-    python server.py --host 0.0.0.0        # buka ke LAN (HP/ESP32 di WiFi sama)
+    python server.py                       # auto: use whatever models are present
+    python server.py --mode mock           # no torch, UI demo only
+    python server.py --host 0.0.0.0        # expose on the LAN (phone/ESP32 on the same Wi-Fi)
 
-Keamanan (sesuai kebijakan backend lokal): hanya klien loopback / IP privat
-(LAN) yang dilayani. Batasi lebih ketat dengan
+Security (local-backend policy): only loopback / private-LAN clients are
+served. Restrict further with
     QUEUEIQ_ALLOWED_IPS=192.168.1.20,192.168.1.55
 
-Endpoint utama (semua JSON kecuali disebut lain):
-    GET  /health                         tier model, device, versi
-    GET  /api/lanes                      snapshot semua lane + rekomendasi
-    POST /api/lanes/{id}/analyze         upload frame (multipart 'file') ATAU
-                                         form 'example=<nama>' -> deteksi
-    GET  /api/lanes/{id}/frame.jpg       frame beranotasi terakhir
+Main endpoints (JSON unless stated otherwise):
+    GET  /health                         model tier, device, version
+    GET  /api/lanes                      snapshot of all lanes + recommendation
+    POST /api/lanes/{id}/analyze         upload a frame (multipart 'file') OR
+                                         form 'example=<name>' -> detections
+    GET  /api/lanes/{id}/frame.jpg       latest annotated frame
     POST /api/lanes/{id}/open            {"open": true|false}
     POST /api/lanes/{id}/complete        {"actual_sec": 87} -> feedback ->
-                                         model belajar (SGD step)
-    POST /api/analyze                    stateless: frame -> hasil + gambar b64
-    GET  /api/model                      parameter + riwayat akurasi
+                                         the model learns (SGD step)
+    POST /api/analyze                    stateless: frame -> result + b64 image
+    GET  /api/model                      parameters + accuracy history
     POST /api/model/reset                {"warm_start": true}
-    GET  /api/examples                   frame contoh bawaan repo
+    GET  /api/examples                   sample frames bundled with the repo
     POST /api/demo/scenario              {"name": "seed"|"surge"|"cctv"|"clear"}
-    GET  /api/videos                     footage demo di videos/ (kamera virtual)
+    GET  /api/videos                     demo footage in videos/ (virtual camera)
     POST /api/lanes/{id}/video           {"name": "x.mp4", "interval_sec": 2} ->
-                                         putar video lewat pipeline ke lane
+                                         play the video through the pipeline into a lane
     POST /api/lanes/{id}/video/stop
-    GET  /api/led            /api/led/{id}   warna lampu (untuk ESP32, text)
+    GET  /api/led            /api/led/{id}   light colour (plain text, for an ESP32)
     GET  /api/events                     Server-Sent Events: lanes/log/model
 """
 
@@ -51,6 +50,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+# Offline mode: the weights live in this folder, so never let Ultralytics
+# try to check for updates or download anything during an offline demo.
+os.environ.setdefault("YOLO_OFFLINE", "1")
+
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
@@ -66,10 +69,10 @@ VERSION = "0.3.0"
 VENDOR = "DM Tech"
 ROOT = Path(__file__).resolve().parent
 EXAMPLES_DIR = ROOT / "examples"
-VIDEOS_DIR = ROOT / "videos"          # footage demo (di-gitignore) -> kamera virtual
+VIDEOS_DIR = ROOT / "videos"          # demo footage -> virtual camera
 VIDEO_EXT = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 LANE_NAMES = {1: "Lane 01", 2: "Lane 02", 3: "Lane 03", 4: "Lane 04"}
-MIN_MEASURED_FEEDBACK_SEC = 15.0   # Done < 15 dtk = bukan checkout nyata, jangan belajar
+MIN_MEASURED_FEEDBACK_SEC = 15.0   # Done under 15 s = not a real checkout, do not learn
 
 
 
@@ -95,7 +98,7 @@ class ScenarioBody(BaseModel):
 
 class VideoBody(BaseModel):
     name: str
-    interval_sec: float = 2.0     # 1 frame dianalisis tiap N detik video & jam nyata
+    interval_sec: float = 2.0     # analyse 1 frame every N seconds of video and wall time
     loop: bool = True
 
 
@@ -109,7 +112,7 @@ class Shopper:
     confidence: float
     est_items: int
     est_sec: float
-    source: str                 # basket | area-bawaan | mock | scenario
+    source: str                 # basket | carry-region | mock | scenario
     detected_at: float
     person_box: Optional[list] = None
     crop_box: Optional[list] = None
@@ -131,7 +134,7 @@ class Lane:
     completed: int = 0
     video_name: Optional[str] = None
     video_task: Optional[asyncio.Task] = None
-    video_token: object = None      # identitas pemutaran aktif (untuk cleanup aman)
+    video_token: object = None      # identity of the active playback (safe cleanup)
 
     def remaining_of(self, i: int, now: float) -> float:
         s = self.shoppers[i]
@@ -187,8 +190,8 @@ def _avg_fullness(shoppers: list[Shopper]) -> Optional[float]:
 
 
 def _root_cause(lane: Lane, now: float) -> str:
-    """Penjelasan singkat untuk manager dashboard: kenapa lane ini
-    lambat/cepat (poin diferensiasi: bukan sekadar hitung orang)."""
+    """Short explanation for the manager dashboard: why this lane is
+    slow/fast (the differentiator: not just a headcount)."""
     if not lane.open:
         return "Lane closed."
     n = len(lane.shoppers)
@@ -296,7 +299,7 @@ class Store:
             )
             for d in result["detections"]
         ]
-        # orang di depan yang sama masih dilayani -> jangan reset timer
+        # the same front shopper is still being served -> keep the timer
         lane.front_started_at = (lane.front_started_at if had_front and lane.shoppers else
                                  (now if lane.shoppers else None))
         lane.frame = jpeg
@@ -323,9 +326,9 @@ class Store:
         lane.completed += 1
         learned = None
         skipped_reason = None
-        # Pengaman: waktu TERUKUR (tombol Done) yang terlalu pendek hampir pasti
-        # bukan checkout sungguhan (operator menekan Done saat demo) -> jangan
-        # dipakai belajar. Angka eksplisit ("Teach the model") tetap diterima.
+        # Guard: a MEASURED time (Done button) that is too short is almost
+        # certainly not a real checkout (an operator clicking during a demo) ->
+        # do not learn from it. Explicit numbers ("Teach the model") are accepted.
         if actual_sec is None and (measured is None or measured < MIN_MEASURED_FEEDBACK_SEC):
             skipped_reason = (f"measured {measured:.0f}s is under {MIN_MEASURED_FEEDBACK_SEC}s — "
                               f"not a real checkout, model left unchanged"
@@ -359,11 +362,11 @@ class Store:
         if lane.front_started_at is None:
             lane.front_started_at = now
 
-    # --- kamera virtual: putar file video lewat pipeline ---
+    # --- virtual camera: play a video file through the pipeline ---
     async def play_video(self, lane: Lane, path: Path, interval: float, loop: bool):
-        """Baca 1 frame tiap `interval` detik (waktu video == waktu nyata) dan
-        analisis ke lane seolah-olah datang dari kamera overhead."""
-        import cv2  # lazy: hanya dibutuhkan untuk fitur ini
+        """Read one frame every `interval` seconds (video time == wall time) and
+        analyse it into the lane as if it came from the overhead camera."""
+        import cv2  # lazy: only needed for this feature
 
         token = object()
         lane.video_token = token
@@ -400,19 +403,19 @@ class Store:
             raise
         finally:
             cap.release()
-            if lane.video_token is token:   # belum digantikan pemutaran lain
+            if lane.video_token is token:   # not superseded by another playback
                 lane.video_name, lane.video_task, lane.video_token = None, None, None
                 await self.add_log(f"{lane.name}: virtual camera stopped.", kind="system", lane_id=lane.id)
                 await self.push_lanes()
 
     def stop_video(self, lane: Lane):
-        """Batalkan task pemutaran; cleanup & log dilakukan di finally play_video."""
+        """Cancel the playback task; cleanup and logging happen in play_video's finally."""
         if lane.video_task and not lane.video_task.done():
             lane.video_task.cancel()
 
     async def tick(self):
-        """Loop 1 detik: hitung mundur & auto-advance bila front shopper selesai
-        (tanpa feedback ke model — hanya feedback nyata yang dipakai belajar)."""
+        """1-second loop: countdown and auto-advance when the front shopper is done
+        (no feedback to the model — only real feedback is used for learning)."""
         while True:
             await asyncio.sleep(1)
             now = time.time()
@@ -426,8 +429,8 @@ class Store:
                                        f"no timing feedback).", kind="info", lane_id=lane.id)
                     changed = True
             self._beat += 1
-            # Countdown berjalan di sisi klien (front_started_at + est_sec);
-            # server hanya push saat ada perubahan + heartbeat tiap 10 detik.
+            # The countdown runs client-side (front_started_at + est_sec);
+            # the server only pushes on changes plus a heartbeat every 10 seconds.
             if changed or self._beat % 10 == 0:
                 await self.push_lanes()
 
@@ -637,7 +640,7 @@ def create_app(mode: str = "auto") -> FastAPI:
         await store.push_lanes()
         return store.snapshot()
 
-    # ---------------- video sebagai kamera virtual ----------------
+    # ---------------- video as a virtual camera ----------------
     def _list_videos():
         if not VIDEOS_DIR.is_dir():
             return []
@@ -716,7 +719,7 @@ def main():
     import uvicorn
     parser = argparse.ArgumentParser(description="QueueIQ Vision API")
     parser.add_argument("--host", default=os.environ.get("QUEUEIQ_HOST", "127.0.0.1"),
-                        help="127.0.0.1 (default) atau 0.0.0.0 untuk LAN")
+                        help="127.0.0.1 (default) or 0.0.0.0 for the LAN")
     parser.add_argument("--port", type=int, default=int(os.environ.get("QUEUEIQ_PORT", "8000")))
     parser.add_argument("--mode", choices=["auto", "mock"], default=os.environ.get("QUEUEIQ_MODE", "auto"))
     args = parser.parse_args()

@@ -1,30 +1,30 @@
 """
 finetune_basket_detector.py
 
-Fine-tune detector keranjang (MASTER_PROMPT §3: "Cart/basket detection —
-fine-tune ringan"), TANPA anotasi manual, lewat dua tahap:
+Fine-tune a basket detector (MASTER_PROMPT §3: "Cart/basket detection —
+light fine-tune") WITHOUT manual annotation, in two stages:
 
-TAHAP 1 — AUTO-LABEL (bootstrap):
-    YOLO-World (open-vocabulary, zero-shot) mendeteksi "shopping basket" /
-    "shopping cart" di semua foto keranjang di dataset/raw/, lalu hasilnya
-    ditulis sebagai label format YOLO ke dataset_detect/.
-    Foto tanpa deteksi dilewati (tidak masuk dataset training).
+STAGE 1 — AUTO-LABEL (bootstrap):
+    YOLO-World (open-vocabulary, zero-shot) detects "shopping basket" /
+    "shopping cart" in every basket photo under dataset/raw/, and the results
+    are written as YOLO-format labels into dataset_detect/.
+    Photos with no detection are skipped (not added to the training set).
 
-TAHAP 2 — FINE-TUNE:
-    YOLOv8n (6MB, cepat) dilatih dari label tahap 1. Hasilnya detector
-    keranjang khusus yang jauh lebih ringan dari YOLO-World untuk dipakai
-    real-time di detect_queue.py.
+STAGE 2 — FINE-TUNE:
+    YOLOv8n (6 MB, fast) is trained on the stage-1 labels. The result is a
+    dedicated basket detector, far lighter than YOLO-World, for real-time use
+    in detect_queue.py and server.py.
 
-CARA PAKAI:
+USAGE:
     python finetune_basket_detector.py                 # label + train
-    python finetune_basket_detector.py --skip_label    # train saja (label sudah ada)
+    python finetune_basket_detector.py --skip_label    # train only (labels already exist)
     python finetune_basket_detector.py --epochs 60
 
-Output: basket_detector.pt (+ metrik val di runs/detect/).
+Output: basket_detector.pt (+ validation metrics under runs/detect/).
 
-Catatan: kualitas label = kualitas YOLO-World, bukan manusia — cukup untuk
-MVP hackathon. Saat ada waktu, review label di dataset_detect/labels/
-(format: class cx cy w h ternormalisasi) atau tambah foto sendiri.
+Note: label quality = YOLO-World quality, not a human's — good enough for a
+hackathon MVP. When there is time, review the labels in dataset_detect/labels/
+(format: class cx cy w h, normalised) or add your own photos.
 """
 
 import argparse
@@ -34,12 +34,12 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
-RAW_CLASSES = ["empty", "light", "medium", "full"]   # folder berisi keranjang
-PROMPTS = ["shopping basket", "shopping cart"]        # kelas 0 = basket, 1 = cart
+RAW_CLASSES = ["empty", "light", "medium", "full"]   # folders that contain baskets
+PROMPTS = ["shopping basket", "shopping cart"]        # class 0 = basket, 1 = cart
 DETECT_DIR = Path("dataset_detect")
 VAL_RATIO = 0.15
 SEED = 42
-CONF_LABEL = 0.25    # ambang confidence YOLO-World untuk dijadikan label
+CONF_LABEL = 0.25    # YOLO-World confidence threshold to accept a label
 OUT_MODEL = "basket_detector.pt"
 
 
@@ -70,7 +70,7 @@ def autolabel():
             skipped += 1
             continue
         split = split_of[p]
-        # nama unik: <kelasfolder>_<namafile>
+        # unique name: <classfolder>_<filename>
         stem = f"{p.parent.name}_{p.stem}"
         shutil.copy2(p, DETECT_DIR / "images" / split / f"{stem}.jpg")
         lines = []
@@ -85,12 +85,12 @@ def autolabel():
         "train: images/train\nval: images/val\n"
         f"names:\n  0: basket\n  1: cart\n"
     )
-    print(f"\nAuto-label selesai: train={kept['train']} val={kept['val']} "
-          f"(dilewati tanpa deteksi: {skipped})")
+    print(f"\nAuto-labelling done: train={kept['train']} val={kept['val']} "
+          f"(skipped without detection: {skipped})")
 
 
 def train(epochs: int, batch: int):
-    model = YOLO("yolov8n.pt")   # mulai dari pretrained COCO
+    model = YOLO("yolov8n.pt")   # start from COCO pretrained
     results = model.train(
         data=str(DETECT_DIR / "data.yaml"),
         epochs=epochs, batch=batch, imgsz=640,
@@ -98,14 +98,14 @@ def train(epochs: int, batch: int):
     )
     best = Path(results.save_dir) / "weights" / "best.pt"
     shutil.copy2(best, OUT_MODEL)
-    print(f"\nModel tersimpan -> {OUT_MODEL}")
-    print(f"Metrik lengkap  -> {results.save_dir}")
+    print(f"\nModel saved -> {OUT_MODEL}")
+    print(f"Full metrics -> {results.save_dir}")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip_label", action="store_true",
-                        help="Lewati auto-label (dataset_detect/ sudah ada)")
+                        help="Skip auto-labelling (dataset_detect/ already exists)")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch", type=int, default=8)
     args = parser.parse_args()

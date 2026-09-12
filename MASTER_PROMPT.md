@@ -1,125 +1,122 @@
 # MASTER PROMPT — AI-Powered Smart Checkout Queue System
 
-Gunakan prompt ini secara utuh untuk brief ke AI coding assistant (Claude Code,
-ChatGPT, dll), atau sebagai dokumen acuan tim hackathon.
+Use this prompt in full to brief an AI coding assistant (Claude Code, ChatGPT,
+etc.), or as the reference document for the hackathon team.
 
 ---
 
-## 1. Konsep Proyek
+## 1. Project concept
 
-Bangun sistem **AI-Powered Smart Checkout Queue System** untuk supermarket
-dengan beberapa jalur kasir (checkout lane). Tiap lane punya:
-- Kamera overhead (top-down view) memantau antrian.
-- Indikator lampu fisik 3 warna: 🟢 tercepat, 🟡 normal, 🔴 lambat.
+Build an **AI-Powered Smart Checkout Queue System** for a supermarket with
+several checkout lanes. Each lane has:
+- An overhead (top-down) camera watching the queue.
+- A physical three-colour light: 🟢 fastest, 🟡 normal, 🔴 slow.
 
-Tujuan: pakai computer vision + prediksi untuk menentukan lane mana yang
-diprediksi paling cepat, lalu komunikasikan lewat lampu fisik + dashboard
-real-time. Skor tidak boleh cuma menghitung jumlah orang — dua customer
-dengan keranjang penuh bisa lebih lambat dari lima customer dengan sedikit
-barang.
+Goal: use computer vision + prediction to decide which lane is predicted to be
+fastest, then communicate it through the physical light and a real-time
+dashboard. The score must not just count people — two customers with full
+baskets can be slower than five customers with a few items each.
 
-## 2. Scope MVP (24-48 jam hackathon)
+## 2. MVP scope (24–48 hour hackathon)
 
-**Prioritas — kerjakan ini dulu:**
-1. Person detection di antrian (pakai model pretrained, TIDAK perlu training ulang).
-2. Cart/basket detection (fine-tune ringan dari dataset publik).
-3. Basket fullness classifier: `empty` / `light` / `medium` / `full` (BUKAN deteksi per-item barang).
-4. Queue tracking sederhana (ByteTrack/DeepSORT di atas hasil deteksi person).
-5. Checkout Load/Queue Score per lane, dihitung dari jumlah orang + fullness rata-rata.
-6. Prediksi waktu checkout: online linear regression yang belajar dari feedback
-   (predicted_time = intercept + slope × jumlah_item), di-update tiap ada
-   actual_checkout_time_sec baru.
-7. Dashboard customer-facing (status lane + estimasi waktu) dan manager-facing
-   (detail per lane + root cause kenapa lane lambat).
-8. Kontrol lampu fisik (ESP32/Arduino) yang berubah warna sesuai skor real-time.
+**Priority — do this first:**
+1. Person detection in the queue (pretrained model, NO retraining needed).
+2. Cart/basket detection (light fine-tune from a public dataset).
+3. Basket fullness classifier: `empty` / `light` / `medium` / `full` (NOT per-item detection).
+4. Simple queue tracking (ByteTrack/DeepSORT on top of the person detections).
+5. Checkout Load / Queue Score per lane, computed from the number of people + average fullness.
+6. Checkout-time prediction: online linear regression that learns from feedback
+   (predicted_time = intercept + slope × item_count), updated whenever a new
+   actual_checkout_time_sec arrives.
+7. Customer-facing dashboard (lane status + wait estimate) and manager-facing
+   dashboard (per-lane detail + root cause of why a lane is slow).
+8. Physical light control (ESP32/Arduino) that changes colour with the real-time score.
 
-**JANGAN kerjakan ini di MVP (terlalu berat untuk waktu terbatas):**
-- Object detection presisi per barang individual di keranjang (oklusi terlalu berat, butuh 300-500+ gambar dataset).
-- Model deep learning kompleks (LSTM dll) untuk prediksi waktu — data terlalu sedikit, akan overfit. Pakai model linear/regresi sederhana saja.
+**DO NOT do this in the MVP (too heavy for the time available):**
+- Precise per-item object detection inside baskets (occlusion is too heavy, needs 300–500+ images).
+- Complex deep learning (LSTM etc.) for time prediction — too little data, it will overfit. Use a simple linear/regression model.
 
-## 3. Computer Vision Pipeline — Detail Teknis
+## 3. Computer vision pipeline — technical details
 
-| Komponen | Pendekatan | Dataset yang dipakai | Data custom dibutuhkan |
+| Component | Approach | Dataset used | Custom data needed |
 |---|---|---|---|
-| Person detection | YOLOv8/v11 pretrained (COCO), filter class `person` | Tidak perlu | 0 gambar |
-| Cart/basket detection | Fine-tune dari dataset publik (Smart Cart 4 / RPC checkout dataset di Roboflow Universe) | Ya, sebagai basis | 30-50 gambar dari sudut kamera sendiri |
-| Basket fullness | Classifier (MobileNet/ResNet, transfer learning), 4 kelas | Sebagian, atau rekam sendiri | 80-150 gambar (20-40/kelas), atau heuristik CV (background subtraction) untuk versi tercepat, 0 gambar |
-| Queue tracking | Algoritmik (ByteTrack/DeepSORT), bukan ML terlatih | Tidak perlu | 0 |
-| Prediksi waktu checkout | Online linear regression (SGD update per transaksi) | Sintetis (lihat bagian 5) | 20-30 titik data untuk kalibrasi awal |
+| Person detection | YOLOv8/v11 pretrained (COCO), filter class `person` | None | 0 images |
+| Cart/basket detection | Fine-tune from a public dataset (Smart Cart 4 / RPC checkout dataset on Roboflow Universe) | Yes, as a base | 30–50 images from your own camera angle |
+| Basket fullness | Classifier (MobileNet/ResNet, transfer learning), 4 classes | Partly, or record your own | 80–150 images (20–40/class), or a CV heuristic (background subtraction) for the fastest version, 0 images |
+| Queue tracking | Algorithmic (ByteTrack/DeepSORT), not a trained model | None | 0 |
+| Checkout-time prediction | Online linear regression (SGD update per transaction) | Synthetic (see section 5) | 20–30 data points for initial calibration |
 
-Kalau waktu sangat mepet, basket fullness bisa diganti heuristik computer
-vision klasik (hitung area piksel non-background di bounding box keranjang)
-tanpa training model sama sekali — trade-off: akurasi lebih kasar tapi 0
-dataset dan 0 waktu training.
+If time is very tight, basket fullness can be replaced by a classic
+computer-vision heuristic (count non-background pixel area inside the basket
+bounding box) with no model training at all — trade-off: rougher accuracy, but
+0 dataset and 0 training time.
 
-### 3.1 Basket Fullness Classifier — Implementasi
+### 3.1 Basket fullness classifier — implementation
 
-Sudah tersedia kode training + inference (belum di-training karena belum ada
-foto asli — tinggal jalankan begitu dataset foto sudah dikumpulkan):
+Training + inference code is available:
 
-- **`train_fullness_classifier.py`** — transfer learning dari MobileNetV2
-  (pretrained ImageNet), cuma melatih ulang layer classifier terakhir.
-  Cocok untuk dataset kecil (80-150 gambar), ringan, jalan di CPU biasa
-  (gak wajib GPU) — penting untuk demo hackathon di laptop.
-  Input: folder `dataset/train/{empty,light,medium,full}/` dan
+- **`train_fullness_classifier.py`** — transfer learning from MobileNetV2
+  (ImageNet pretrained), retraining only the final classifier layer (optionally
+  the last few feature blocks with `--unfreeze_last`). Suited to small datasets
+  (80–150 images), light, runs on a normal CPU (no GPU required) — important for
+  a hackathon demo on a laptop.
+  Input: folders `dataset/train/{empty,light,medium,full}/` and
   `dataset/val/{empty,light,medium,full}/`. Output: `fullness_classifier.pt`
   + `class_names.txt`.
-- **`predict.py`** — inference ke foto baru (satu file atau satu folder
-  sekaligus), output kelas prediksi + confidence score per kelas.
+- **`predict.py`** — inference on new photos (one file or a whole folder),
+  printing the predicted class + confidence per class.
 
-**Cara pakai (di laptop/Google Colab, BUKAN di lingkungan chat ini karena
-tidak ada PyTorch terpasang & belum ada foto training):**
+**Usage (on a laptop / Google Colab with PyTorch):**
 ```
 pip install torch torchvision pillow
 
 python train_fullness_classifier.py --data_dir ./dataset --epochs 15
-python predict.py --image ./contoh_basket.jpg
+python predict.py --image ./basket_example.jpg
 ```
 
-Kalau target hackathon terlalu mepet untuk kumpulkan 80-150 foto berlabel,
-fallback ke heuristik CV (background subtraction / hitung area piksel
-terisi di bounding box basket) sebagai pengganti sementara — 0 dataset,
-0 training, tinggal ganti lagi ke classifier ini begitu foto sudah cukup.
+If the hackathon deadline is too tight to collect 80–150 labelled photos, fall
+back to the CV heuristic (background subtraction / filled pixel area inside the
+basket box) as a temporary replacement — 0 dataset, 0 training — and switch
+back to this classifier once enough photos exist.
 
-## 4. Skema Label & Anotasi
+## 4. Label & annotation scheme
 
-**Bounding box (format YOLO):**
+**Bounding boxes (YOLO format):**
 - `person`
 - `cart`, `basket`
-- `person-with-cart` (opsional)
+- `person-with-cart` (optional)
 
-**Klasifikasi fullness (per crop basket):**
-- `empty`, `light` (1-5 item), `medium` (6-15 item), `full` (16+ item)
-- `no_basket_with_items` (kasus customer bawa barang di tangan tanpa keranjang — WAJIB diantisipasi, sering terjadi di kondisi nyata)
+**Fullness classification (per basket crop):**
+- `empty`, `light` (1–5 items), `medium` (6–15 items), `full` (16+ items)
+- `no_basket_with_items` (customer carrying items by hand with no basket — MUST be anticipated, it happens often in real conditions)
 
-**CSV logging per transaksi (kolom):**
+**CSV log per transaction (columns):**
 ```
 image_id, person_id, queue_position, has_basket, basket_type,
 fullness_label, estimated_item_count, predicted_checkout_time_sec,
 actual_checkout_time_sec, prediction_source, notes
 ```
 
-## 5. Strategi Data — Tidak Ada Data Real Saat Hackathon
+## 5. Data strategy — no real data during the hackathon
 
-Karena tidak ada akses data supermarket asli, gunakan **synthetic data yang
-"masuk akal secara statistik"**, bukan random murni:
+Because there is no access to real supermarket data, use **synthetic data that
+is "statistically plausible"**, not pure random:
 
-- Generate ~100-120 transaksi sintetis: waktu dasar dari formula
-  `20 + 7 × jumlah_item`, ditambah variasi kecepatan kasir (noise normal
-  ±8-25%) dan ~12% transaksi dengan outlier delay (30-90 detik, simulasi
-  kartu ditolak/masalah pembayaran).
-- Jalankan online-learning simulation di atas data ini secara berurutan
-  (seolah masuk satu-satu dari waktu ke waktu) untuk membuktikan mekanisme
-  belajar bekerja: parameter model harus konvergen mendekati nilai asli
-  formula, dan prediction accuracy harus naik seiring waktu (target dari
-  ~70% ke ~85-90%+).
-- Tampilkan grafik "prediction accuracy improvement" ini di dashboard
-  manager sebagai bukti sistem "belajar dari feedback".
-- **Transparansi ke judges:** jelaskan bahwa data ini synthetic untuk
-  membuktikan mekanisme, dan begitu sistem deployed, mekanisme yang sama
-  otomatis belajar dari data checkout asli tanpa perlu ubah kode.
+- Generate ~100–120 synthetic transactions: base time from the formula
+  `20 + 7 × item_count`, plus cashier-speed variation (normal noise ±8–25%)
+  and ~12% of transactions with an outlier delay (30–90 seconds, simulating a
+  declined card / payment issue).
+- Run the online-learning simulation over this data sequentially (as if it
+  arrived one transaction at a time) to prove the learning mechanism works: the
+  model parameters must converge towards the formula's true values, and
+  prediction accuracy must rise over time (target from ~70% to ~85–90%+).
+- Show this "prediction accuracy improvement" chart on the manager dashboard as
+  evidence that the system "learns from feedback".
+- **Transparency to judges:** explain that this data is synthetic to prove the
+  mechanism, and that once deployed the same mechanism learns from real checkout
+  data automatically without code changes.
 
-## 6. Arsitektur Sistem
+## 6. System architecture
 
 ```
 OVERHEAD CAMERA
@@ -129,23 +126,23 @@ OVERHEAD CAMERA
         → Prediction Engine (online linear regression)
           → Checkout Load / Wait-Time Score
             ├─→ LED CONTROLLER (ESP32/Arduino) — 🟢🟡🔴
-            └─→ DASHBOARD (Next.js + Supabase Realtime)
-                 ├─ Customer-facing: status lane + estimasi waktu
-                 └─ Manager-facing: detail per lane, root cause, accuracy trend
+            └─→ DASHBOARD (Next.js)
+                 ├─ Customer-facing: lane status + wait estimate
+                 └─ Manager-facing: per-lane detail, root cause, accuracy trend
 ```
 
 **Stack:**
 - Computer vision: Python, OpenCV, YOLOv8 (Ultralytics)
 - Prediction engine: Python (numpy/pandas), online SGD regression
-- Backend/realtime: Supabase (Postgres + Realtime subscriptions)
+- Backend/realtime: FastAPI + Server-Sent Events (`server.py`); Supabase optional later
 - Frontend: Next.js
-- Hardware: ESP32/Arduino untuk LED, webcam/HP untuk kamera overhead saat demo
-- Komunikasi: WebSocket / Supabase Realtime channel
+- Hardware: ESP32/Arduino for the LEDs, webcam/phone as the overhead camera during the demo
+- Communication: SSE / WebSocket
 
-## 7. Skema Database (Supabase) — Starting Point
+## 7. Database schema (Supabase) — starting point
 
 ```sql
--- Tabel transaksi checkout (log per customer selesai checkout)
+-- Checkout transactions (one log row per customer who finished checkout)
 create table checkout_transactions (
   id bigint generated always as identity primary key,
   lane_id int not null,
@@ -157,7 +154,7 @@ create table checkout_transactions (
   created_at timestamptz default now()
 );
 
--- Tabel status lane real-time
+-- Real-time lane status
 create table lane_status (
   lane_id int primary key,
   current_queue_count int,
@@ -167,7 +164,7 @@ create table lane_status (
   updated_at timestamptz default now()
 );
 
--- Tabel parameter model (untuk online learning, persist antar restart)
+-- Model parameters (for online learning, persisted across restarts)
 create table model_parameters (
   id bigint generated always as identity primary key,
   intercept numeric,
@@ -176,35 +173,31 @@ create table model_parameters (
 );
 ```
 
-## 8. Demo Flow untuk Presentasi ke Judges
+## 8. Demo flow for the judges
 
-1. Tunjukkan kamera live/rekaman → deteksi person + basket real-time di layar.
-2. Tunjukkan basket fullness classifier bekerja pada beberapa contoh keranjang berbeda isi.
-3. Tunjukkan dashboard dengan skor per lane dan lampu LED fisik berubah warna otomatis.
-4. Tunjukkan grafik prediction accuracy improvement dari simulasi synthetic data — jelaskan mekanisme online learning secara transparan.
-5. Tunjukkan skenario "before-after": lampu berubah dari 🟡 ke 🔴 saat satu lane tiba-tiba dapat customer dengan keranjang penuh.
-6. Tutup dengan root-cause explanation di manager dashboard (misal "Line 3 lambat karena HIGH CUSTOMER LOAD, bukan cuma jumlah orang banyak").
+1. Show the live camera / footage → real-time person + basket detection on screen.
+2. Show the basket fullness classifier working on several baskets with different contents.
+3. Show the dashboard with per-lane scores and the physical LED changing colour automatically.
+4. Show the prediction-accuracy-improvement chart from the synthetic-data simulation — explain the online-learning mechanism transparently.
+5. Show a "before/after" scenario: the light flips from 🟡 to 🔴 when one lane suddenly gets a customer with a full basket.
+6. Close with the root-cause explanation on the manager dashboard (e.g. "Lane 3 is slow because of HIGH BASKET LOAD, not just a high headcount").
 
-## 9. Poin Diferensiasi (untuk pitch ke judges)
+## 9. Differentiators (for the pitch)
 
-- Bukan sekadar people counter — mempertimbangkan **isi keranjang**, bukan cuma jumlah orang.
-- Sistem **belajar dari feedback real** (online learning), bukan skor statis.
-- Transparan soal keterbatasan data saat hackathon, tapi arsitekturnya siap pakai data real tanpa perubahan kode.
-- Kombinasi computer vision + prediksi + hardware fisik (LED) + dashboard — end-to-end, bukan cuma model ML terisolasi.
+- Not just a people counter — it weighs **basket contents**, not only headcount.
+- The system **learns from real feedback** (online learning), not a static score.
+- Transparent about the data limits during the hackathon, while the architecture is ready for real data without code changes.
+- Computer vision + prediction + physical hardware (LED) + dashboard combined — end to end, not an isolated ML model.
 
-## 10. File Pendukung yang Sudah Disiapkan
-- `queue_checkout_labeling_template.csv` / `queue_checkout_labeling_blank.csv` — template anotasi manual.
-- `generate_synthetic_data.py` — generator data checkout sintetis.
-- `online_learning_simulation.py` — simulasi online learning + grafik accuracy improvement.
-- `README_labeling.md` — panduan kolom & formula prediksi awal.
-- `train_fullness_classifier.py` — training basket fullness classifier (transfer learning MobileNetV2). Belum dijalankan, menunggu dataset foto asli.
-- `predict.py` — inference basket fullness classifier ke foto baru.
+## 10. Supporting files
 
-**Status implementasi saat ini:**
-| Komponen | Status |
-|---|---|
-| Person/cart detection (YOLO pretrained) | Belum diimplementasi di repo, tinggal pakai model pretrained langsung |
-| Basket fullness classifier | Kode training/inference sudah ada, belum di-training (menunggu foto) |
-| Prediksi waktu checkout (online regression) | Sudah diimplementasi & diuji dengan synthetic data |
-| Dashboard Next.js + Supabase | Belum diimplementasi |
-| Kontrol LED (ESP32/Arduino) | Belum diimplementasi |
+- `queue_checkout_labeling_template.csv` / `queue_checkout_labeling_blank.csv` — manual annotation templates.
+- `generate_synthetic_data.py` — synthetic checkout data generator.
+- `online_learning_simulation.py` — online-learning simulation + accuracy-improvement chart.
+- `LABELING_GUIDE.md` — column guide & initial prediction formula.
+- `train_fullness_classifier.py` — basket fullness classifier training (MobileNetV2 transfer learning).
+- `predict.py` — basket fullness classifier inference on new photos.
+- `detect_queue.py` — full queue analysis on an image/video (YOLO + classifier + wait estimate).
+- `queueiq_engine.py` + `server.py` — the same pipeline as a library and as the API server behind the `/live` dashboard.
+
+**Current implementation status:** see the Status section in `README.md`.

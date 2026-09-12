@@ -1,27 +1,27 @@
 """
 scrape_images.py
 
-Scraper gambar dari image search (DuckDuckGo, tanpa API key) untuk
-MENSUPLEMEN dataset basket fullness — bukan pengganti foto sendiri.
+Image scraper (DuckDuckGo image search, no API key) to SUPPLEMENT the basket
+fullness dataset — not a replacement for your own photos.
 
-Hasil disimpan ke dataset/raw/<kelas>/ dengan prefix "scraped_" supaya
-gampang dibedakan (dan dihapus massal) dari foto asli:
-    rm dataset/raw/*/scraped_*.jpg      # hapus semua hasil scrape
+Results go to dataset/raw/<class>/ with the prefix "scraped_" so they are easy
+to tell apart from (and bulk-delete separately from) real photos:
+    rm dataset/raw/*/scraped_*.jpg      # delete every scraped image
 
-CARA PAKAI:
-    python scrape_images.py                    # semua kelas, 40 gambar/kelas
-    python scrape_images.py --kelas full       # satu kelas saja
+USAGE:
+    python scrape_images.py                    # all classes, 40 images/class
+    python scrape_images.py --kelas full       # one class only
     python scrape_images.py --per_kelas 60
 
-SETELAH SCRAPE — WAJIB KURASI MANUAL:
-    Buka tiap folder, hapus gambar yang: salah kelas, sudut terlalu beda
-    (foto produk/marketing dari samping), ada watermark besar, atau bukan
-    keranjang belanja sama sekali. Search engine sering meleset.
+AFTER SCRAPING — MANUAL CURATION IS MANDATORY:
+    Open every folder and delete images that are the wrong class, shot from
+    a very different angle (side-view product/marketing shots), carry a large
+    watermark, or are not shopping baskets at all. Search engines miss often.
 
-Filter otomatis yang sudah diterapkan:
-    - file bukan gambar valid -> buang
-    - resolusi < 200px sisi terpendek -> buang
-    - duplikat (hash konten sama) -> buang, termasuk antar kelas
+Automatic filters already applied:
+    - not a valid image file -> dropped
+    - shortest side < 200 px -> dropped
+    - duplicates (identical content hash) -> dropped, across classes too
 """
 
 import argparse
@@ -35,11 +35,11 @@ from PIL import Image
 from ddgs import DDGS
 
 RAW_DIR = Path("dataset/raw")
-MIN_SIDE = 200          # px, buang gambar kekecilan/thumbnail
-TIMEOUT = 10            # detik per download
+MIN_SIDE = 200          # px, drop tiny images/thumbnails
+TIMEOUT = 10            # seconds per download
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) dataset-collector"}
 
-# Query per kelas. Bahasa Inggris -> hasil jauh lebih banyak.
+# Queries per class. English queries return far more results.
 QUERIES = {
     "empty": [
         "empty shopping basket supermarket",
@@ -57,7 +57,7 @@ QUERIES = {
         "half full shopping cart groceries",
     ],
     "full": [
-        # hindari frasa "basket full" polos -> image search nyasar ke "cat in basket"
+        # avoid the bare phrase "basket full" -> image search drifts to "cat in basket"
         "grocery shopping basket filled with food products",
         "supermarket basket loaded with groceries top view",
         "overflowing shopping cart groceries supermarket",
@@ -74,8 +74,8 @@ def content_hash(data: bytes) -> str:
 
 
 def existing_hashes() -> set[str]:
-    """Hash semua gambar yang SUDAH ada di raw/ (foto asli + scrape lama),
-    supaya tidak menyimpan duplikat."""
+    """Hash every image ALREADY in raw/ (real photos + earlier scrapes) so
+    duplicates are not saved again."""
     hashes = set()
     for p in RAW_DIR.rglob("*"):
         if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -84,7 +84,7 @@ def existing_hashes() -> set[str]:
 
 
 def validate_and_convert(data: bytes) -> bytes | None:
-    """Return bytes JPG kalau gambar valid & cukup besar, else None."""
+    """Return JPEG bytes if the image is valid and large enough, else None."""
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
@@ -109,7 +109,7 @@ def scrape_class(kelas: str, target: int, seen: set[str]) -> int:
         try:
             results = DDGS().images(query, max_results=target)
         except Exception as e:
-            print(f"    search gagal ({e}), lanjut query berikutnya")
+            print(f"    search failed ({e}), moving to the next query")
             continue
 
         for r in results:
@@ -135,7 +135,7 @@ def scrape_class(kelas: str, target: int, seen: set[str]) -> int:
             (out_dir / f"scraped_{h}.jpg").write_bytes(jpg)
             saved += 1
 
-        time.sleep(1)  # sopan ke search engine antar query
+        time.sleep(1)  # be polite to the search engine between queries
 
     return saved
 
@@ -143,28 +143,28 @@ def scrape_class(kelas: str, target: int, seen: set[str]) -> int:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kelas", choices=list(QUERIES), default=None,
-                        help="Satu kelas saja (default: semua)")
+                        help="One class only (default: all)")
     parser.add_argument("--per_kelas", type=int, default=40,
-                        help="Target gambar per kelas (default 40)")
+                        help="Target images per class (default 40)")
     args = parser.parse_args()
 
     if not RAW_DIR.is_dir():
-        raise SystemExit(f"{RAW_DIR} tidak ada. Jalankan dari root proyek QueueIQ.")
+        raise SystemExit(f"{RAW_DIR} does not exist. Run from the QueueIQ project root.")
 
     classes = [args.kelas] if args.kelas else list(QUERIES)
     seen = existing_hashes()
-    print(f"({len(seen)} gambar sudah ada di raw/, duplikat akan dilewati)\n")
+    print(f"({len(seen)} images already in raw/, duplicates will be skipped)\n")
 
     total = 0
     for kelas in classes:
         print(f"[{kelas}] target {args.per_kelas}:")
         n = scrape_class(kelas, args.per_kelas, seen)
         total += n
-        print(f"  -> {n} gambar tersimpan\n")
+        print(f"  -> {n} images saved\n")
 
-    print(f"Total {total} gambar baru (prefix scraped_).")
-    print("\nWAJIB: kurasi manual — buka tiap folder, hapus yang salah kelas /")
-    print("sudut aneh / watermark. Hapus semua hasil scrape sekaligus dengan:")
+    print(f"Total {total} new images (prefix scraped_).")
+    print("\nMANDATORY: curate manually — open every folder, delete wrong-class /")
+    print("odd-angle / watermarked images. Delete every scraped image at once with:")
     print("  rm dataset/raw/*/scraped_*.jpg")
 
 

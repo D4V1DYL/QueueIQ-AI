@@ -1,19 +1,19 @@
 """
 generate_synthetic_data.py
-Membuat data checkout sintetis yang "masuk akal" (bukan random murni),
-untuk simulasi karena belum ada data supermarket asli.
+Creates "plausible" synthetic checkout data (not pure random) for the
+simulation, because there is no real supermarket data yet.
 
-Logika:
-- Waktu dasar dihitung dari jumlah item (formula linear).
-- Ditambah noise realistis: variasi kecepatan kasir, kadang ada delay
-  (masalah pembayaran, tanya harga, dll) yang muncul acak sebagai outlier.
+Logic:
+- Base time computed from the item count (linear formula).
+- Plus realistic noise: cashier-speed variation, and occasional delays
+  (payment problems, price checks, etc.) appearing randomly as outliers.
 """
 
 import numpy as np
 import pandas as pd
 
 RANDOM_SEED = 42
-N_TRANSACTIONS = 120  # jumlah transaksi checkout yang disimulasikan
+N_TRANSACTIONS = 120  # number of simulated checkout transactions
 
 FULLNESS_BINS = [
     ("empty", 0, 0),
@@ -35,25 +35,25 @@ def generate_synthetic_checkouts(n=N_TRANSACTIONS, seed=RANDOM_SEED) -> pd.DataF
 
     rows = []
     for i in range(1, n + 1):
-        # jumlah item: distribusi gamma (lebih banyak transaksi kecil,
-        # sedikit transaksi belanja besar) -- realistis untuk supermarket
+        # item count: gamma distribution (many small transactions, a few big
+        # shops) -- realistic for a supermarket
         item_count = int(np.clip(rng.gamma(shape=2.0, scale=5.0), 1, 30))
 
-        # waktu dasar: overhead 20 detik + 7 detik per item (asumsi kasir normal)
+        # base time: 20 s overhead + 7 s per item (normal-speed cashier)
         base_time = 20 + item_count * 7
 
-        # kecepatan kasir bervariasi antar transaksi (multiplier ~0.85x - 1.15x)
+        # cashier speed varies between transactions (multiplier ~0.85x - 1.15x)
         cashier_speed_factor = rng.normal(loc=1.0, scale=0.08)
         cashier_speed_factor = np.clip(cashier_speed_factor, 0.8, 1.25)
 
         actual_time = base_time * cashier_speed_factor
 
-        # outlier acak: ~12% transaksi kena delay tak terduga
-        # (kartu ditolak, tanya harga, dsb) -> tambahan 30-90 detik
+        # random outliers: ~12% of transactions hit an unexpected delay
+        # (declined card, price check, etc.) -> extra 30-90 seconds
         if rng.random() < 0.12:
             actual_time += rng.uniform(30, 90)
 
-        actual_time = max(15, round(actual_time))  # minimal 15 detik, sensible floor
+        actual_time = max(15, round(actual_time))  # at least 15 seconds, a sensible floor
 
         rows.append({
             "transaction_id": i,

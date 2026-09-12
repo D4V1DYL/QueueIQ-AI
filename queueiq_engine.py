@@ -1,23 +1,23 @@
 """
 queueiq_engine.py
 
-Inti pipeline QueueIQ dalam bentuk library (dipakai oleh server.py, bisa juga
-diimpor dari notebook/skrip lain). Menggabungkan:
+The QueueIQ pipeline as a library (used by server.py; can also be imported
+from a notebook or other scripts). It chains:
 
-    frame kamera
-      -> YOLO pretrained (COCO): deteksi PERSON
-      -> (opsional) basket detector hasil fine-tune
-      -> basket fullness classifier  ATAU  heuristik CV bila model belum ada
-      -> online linear regression: estimasi detik checkout per orang
-      -> skor lane + status lampu hijau / kuning / merah
+    camera frame
+      -> pretrained YOLO (COCO): PERSON detection
+      -> (optional) fine-tuned basket detector
+      -> basket fullness classifier  OR  a CV heuristic when no model exists
+      -> online linear regression: estimated checkout seconds per person
+      -> lane score + light status green / amber / red
 
-Engine memilih "tier" secara otomatis sesuai apa yang tersedia di mesin:
+The engine picks a "tier" automatically from what is available on the machine:
 
-    full       YOLO + fullness_classifier.pt        (akurasi terbaik)
-    heuristic  YOLO + heuristik CV (edge/warna)     (belum ada classifier)
-    mock       tanpa torch sama sekali              (demo UI saja)
+    full       YOLO + fullness_classifier.pt        (best accuracy)
+    heuristic  YOLO + CV heuristic (edges/colour)   (no classifier yet)
+    mock       no torch at all                      (UI demo only)
 
-Tier selalu dilaporkan ke frontend lewat /health supaya transparan ke juri.
+The tier is always reported to the frontend via /health so judges can see it.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageStat
 
 ROOT = Path(__file__).resolve().parent
 
-# ---------------- konfigurasi ----------------
+# ---------------- configuration ----------------
 YOLO_WEIGHTS = ROOT / "yolov8n.pt"
 BASKET_WEIGHTS = ROOT / "basket_detector.pt"
 FULLNESS_MODEL = ROOT / "fullness_classifier.pt"
@@ -49,15 +49,15 @@ MODEL_STATE = ROOT / "model_state.json"
 PERSON_CONF = 0.35
 BASKET_CONF = 0.35
 
-# fullness -> perkiraan jumlah item (titik tengah rentang label)
+# fullness -> approximate item count (midpoint of the label's range)
 FULLNESS_TO_ITEMS = {
     "empty": 0, "light": 3, "medium": 10, "full": 23,
     "no_basket_with_items": 2,
 }
 FULLNESS_ORDER = ["empty", "light", "medium", "full", "no_basket_with_items"]
 
-# ambang status lane (detik total antrian) -> warna lampu.
-# Selaras dengan dashboard: hijau <= 2 mnt, kuning <= 4 mnt, merah > 4 mnt.
+# lane status thresholds (total queue seconds) -> light colour.
+# Matches the dashboard: green <= 2 min, amber <= 4 min, red > 4 min.
 THRESHOLD_GREEN = 120
 THRESHOLD_AMBER = 240
 
@@ -65,11 +65,11 @@ STATUS_RGB = {"green": (40, 200, 80), "amber": (240, 200, 40), "red": (230, 60, 
 
 
 # =====================================================================
-# Geometri
+# Geometry
 # =====================================================================
 def carry_region(person_box, img_w, img_h):
-    """Area bawaan: separuh bawah kotak person, dilebarkan ke samping
-    (keranjang dijinjing di samping badan)."""
+    """Carry region: the lower half of the person box, widened sideways
+    (baskets are carried beside the body)."""
     x1, y1, x2, y2 = person_box
     h = y2 - y1
     pad = (x2 - x1) * 0.35
@@ -95,7 +95,7 @@ def parse_zone(s: str):
         x, y = tok.split(",")
         pts.append((float(x), float(y)))
     if len(pts) < 3:
-        raise ValueError("Zone butuh minimal 3 titik")
+        raise ValueError("A zone needs at least 3 points")
     return pts
 
 
@@ -121,15 +121,15 @@ def status_for(total_sec: float) -> str:
 
 
 # =====================================================================
-# Online linear regression (belajar dari feedback checkout)
+# Online linear regression (learns from checkout feedback)
 # =====================================================================
 @dataclass
 class OnlineRegressor:
-    """predicted_sec = intercept + slope * item_count, di-update SGD per transaksi.
+    """predicted_sec = intercept + slope * item_count, updated by SGD per transaction.
 
-    Sama persis dengan online_learning_simulation.py, tapi bisa disimpan/dimuat
-    dan menyimpan riwayat supaya grafik "accuracy improvement" bisa ditampilkan
-    di dashboard manager.
+    Identical to online_learning_simulation.py, but it can be saved/loaded and
+    keeps a history so the "accuracy improvement" chart can be shown on the
+    manager dashboard.
     """
 
     intercept: float = 10.0
@@ -214,9 +214,9 @@ class OnlineRegressor:
                    n_synthetic=d.get("n_synthetic", 0))
 
     def warm_start(self, csv_path: Path = SYNTHETIC_CSV) -> int:
-        """Putar ulang data sintetis (transparan: ditandai source='synthetic')
-        supaya model tidak mulai dari nol saat demo dan grafik langsung
-        menunjukkan kurva belajar."""
+        """Replay the synthetic data (transparently tagged source='synthetic')
+        so the model does not start from zero during a demo and the chart shows
+        a learning curve straight away."""
         if not csv_path.exists():
             return 0
         n = 0
@@ -229,11 +229,11 @@ class OnlineRegressor:
 
 
 # =====================================================================
-# Fullness: classifier (jika ada) atau heuristik CV
+# Fullness: classifier (if present) or CV heuristic
 # =====================================================================
 class HeuristicFullness:
-    """Fallback tanpa training (MASTER_PROMPT §3): kepadatan tepi + variasi
-    warna di area bawaan -> empty/light/medium/full. Kasar tapi 0 dataset."""
+    """Training-free fallback (MASTER_PROMPT §3): edge density + colour
+    variation in the carry region -> empty/light/medium/full. Rough, but 0 dataset."""
 
     name = "cv-heuristic"
 
@@ -252,7 +252,7 @@ class HeuristicFullness:
             label = "medium"
         else:
             label = "full"
-        conf = 0.55 + min(0.3, abs(score - 0.45))  # kepercayaan sengaja rendah
+        conf = 0.55 + min(0.3, abs(score - 0.45))  # deliberately low confidence
         return label, round(conf, 2), {"score": round(score, 3),
                                         "edge_density": round(edge_density, 3),
                                         "saturation": round(sat, 3)}
@@ -299,7 +299,7 @@ class Detection:
     index: int
     person_box: Optional[tuple]
     crop_box: tuple
-    source: str            # "basket" | "area-bawaan" | "mock"
+    source: str            # "basket" | "carry-region" | "mock"
     fullness: str
     confidence: float
     est_items: int
@@ -337,7 +337,7 @@ class QueueEngine:
             else:
                 self.fullness = HeuristicFullness()
                 self.tier = "heuristic"
-        except Exception as e:  # torch/ultralytics tidak ada -> mock
+        except Exception as e:  # torch/ultralytics missing -> mock
             self.load_error = f"{type(e).__name__}: {e}"
             self.tier = "mock"
             self.yolo = None
@@ -421,7 +421,7 @@ class QueueEngine:
             if bbox is not None:
                 crop_box, src = bbox, "basket"
             else:
-                crop_box, src = carry_region(pbox, w, h), "area-bawaan"
+                crop_box, src = carry_region(pbox, w, h), "carry-region"
             crop = img.crop(crop_box)
             label, conf, detail = self.fullness.predict(crop)
             items = FULLNESS_TO_ITEMS.get(label, 3)
@@ -430,7 +430,7 @@ class QueueEngine:
         return dets, n_all
 
     def _mock_detections(self, img):
-        """Deteksi deterministik dari hash gambar — untuk demo UI tanpa torch."""
+        """Deterministic detections from the image hash — UI demo without torch."""
         w, h = img.size
         seed = int(hashlib.md5(img.tobytes()[:20000]).hexdigest(), 16)
         rng = random.Random(seed)
@@ -470,7 +470,7 @@ class QueueEngine:
             d.rectangle(r.crop_box, outline=(255, 255, 0), width=2)
             d.text((tx, ty), f"#{i} {r.fullness[:8]} {r.est_sec:.0f}s", fill=(0, 180, 255))
         d.rectangle((0, 0, w, 26), fill=STATUS_RGB[status])
-        d.text((8, 6), f"LANE {status.upper()} | {len(dets)} orang | ~{total:.0f} dtk"
+        d.text((8, 6), f"LANE {status.upper()} | {len(dets)} shoppers | ~{total:.0f} s"
                        f" | {self.tier}", fill=(0, 0, 0))
         buf = io.BytesIO()
         vis.save(buf, format="JPEG", quality=85)
@@ -478,8 +478,8 @@ class QueueEngine:
 
 
 def regressor_from_disk() -> OnlineRegressor:
-    """Urutan prioritas: model_state.json (hasil belajar live) -> warm start
-    dari synthetic CSV -> parameter awal formula."""
+    """Priority order: model_state.json (live learning state) -> warm start
+    from the synthetic CSV -> the formula's initial parameters."""
     reg = OnlineRegressor.load()
     if reg is not None:
         return reg

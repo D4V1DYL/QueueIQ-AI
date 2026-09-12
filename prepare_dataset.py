@@ -1,33 +1,33 @@
 """
 prepare_dataset.py
 
-Membagi foto mentah di dataset/raw/<kelas>/ menjadi struktur train/val
-yang dibutuhkan train_fullness_classifier.py:
+Splits the raw photos in dataset/raw/<class>/ into the train/val structure
+required by train_fullness_classifier.py:
 
     dataset/raw/empty/    --->    dataset/train/empty/  +  dataset/val/empty/
     dataset/raw/light/            dataset/train/light/  +  dataset/val/light/
-    ... dst
+    ... etc.
 
-CARA PAKAI:
-1. Taruh semua foto ke folder kelasnya masing-masing di dataset/raw/
-   (nama file bebas, format .jpg/.jpeg/.png/.webp).
-2. Jalankan:
+USAGE:
+1. Put every photo into its class folder under dataset/raw/
+   (any file name, formats .jpg/.jpeg/.png/.webp).
+2. Run:
        python prepare_dataset.py
-   Opsional:
+   Optional:
        python prepare_dataset.py --val_ratio 0.2 --seed 42
-3. Lanjut training:
+3. Continue with training:
        python train_fullness_classifier.py --data_dir ./dataset --epochs 15
 
-Catatan:
-- Split di-shuffle dengan seed tetap -> hasil sama tiap dijalankan ulang
-  (reproducible). Ganti --seed kalau mau split berbeda.
-- Folder train/ dan val/ DIHAPUS dan dibuat ulang tiap run, jadi aman
-  dijalankan berulang kali saat foto bertambah. Foto asli di raw/ tidak
-  pernah disentuh (hanya di-copy).
-- Kelas dengan 0 foto dilewati; kelas dengan foto sangat sedikit diberi
-  peringatan (minimal disarankan ~20 foto per kelas).
+Notes:
+- The split is shuffled with a fixed seed -> the same result on every run
+  (reproducible). Change --seed for a different split.
+- train/ and val/ are DELETED and recreated on every run, so it is safe to
+  run repeatedly as photos are added. The originals in raw/ are never
+  touched (only copied).
+- Classes with 0 photos are skipped; classes with very few photos get a
+  warning (about 20 photos per class is the recommended minimum).
 
-Hanya pakai library standar Python — tidak butuh torch/pandas untuk step ini.
+Uses only the Python standard library — no torch/pandas needed for this step.
 """
 
 import argparse
@@ -37,7 +37,7 @@ from pathlib import Path
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MIN_RECOMMENDED_PER_CLASS = 20
-MIN_VAL_IMAGES = 2  # tiap kelas minimal segini di val, biar val_acc bermakna
+MIN_VAL_IMAGES = 2  # at least this many per class in val, so val_acc means something
 
 
 def collect_images(class_dir: Path) -> list[Path]:
@@ -52,7 +52,7 @@ def main():
     parser.add_argument("--raw_dir", type=str, default="dataset/raw")
     parser.add_argument("--out_dir", type=str, default="dataset")
     parser.add_argument("--val_ratio", type=float, default=0.2,
-                        help="Porsi foto untuk validasi (default 20%%)")
+                        help="Share of photos used for validation (default 20%%)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -61,19 +61,19 @@ def main():
     rng = random.Random(args.seed)
 
     if not raw_dir.is_dir():
-        raise SystemExit(f"Folder {raw_dir} tidak ditemukan. Jalankan dari root proyek.")
+        raise SystemExit(f"Folder {raw_dir} not found. Run from the project root.")
 
     class_dirs = sorted(d for d in raw_dir.iterdir() if d.is_dir())
     if not class_dirs:
-        raise SystemExit(f"Tidak ada folder kelas di {raw_dir}.")
+        raise SystemExit(f"No class folders in {raw_dir}.")
 
-    # bersihkan hasil split lama supaya tidak ada foto "nyangkut"
+    # clear the previous split so no stale photos linger
     for split in ("train", "val"):
         split_dir = out_dir / split
         if split_dir.exists():
             shutil.rmtree(split_dir)
 
-    print(f"{'Kelas':<22} {'Total':>6} {'Train':>6} {'Val':>5}")
+    print(f"{'Class':<22} {'Total':>6} {'Train':>6} {'Val':>5}")
     print("-" * 45)
 
     total_all = 0
@@ -84,21 +84,21 @@ def main():
         name = class_dir.name
 
         if not images:
-            warnings.append(f"'{name}': 0 foto — kelas dilewati.")
+            warnings.append(f"'{name}': 0 photos — class skipped.")
             continue
 
         rng.shuffle(images)
         n_val = max(MIN_VAL_IMAGES, round(len(images) * args.val_ratio))
-        n_val = min(n_val, len(images) - 1)  # sisakan minimal 1 untuk train
+        n_val = min(n_val, len(images) - 1)  # leave at least 1 for train
         val_images, train_images = images[:n_val], images[n_val:]
 
         for split, subset in (("train", train_images), ("val", val_images)):
             if not subset:
-                # folder kelas kosong bikin ImageFolder (torchvision) error,
-                # jadi jangan dibuat sama sekali
+                # an empty class folder makes torchvision's ImageFolder fail,
+                # so do not create it at all
                 warnings.append(
-                    f"'{name}': tidak kebagian foto untuk {split} — "
-                    f"tambah foto kelas ini sebelum training."
+                    f"'{name}': no photos left for {split} — "
+                    f"add photos of this class before training."
                 )
                 continue
             dest = out_dir / split / name
@@ -111,20 +111,20 @@ def main():
 
         if len(images) < MIN_RECOMMENDED_PER_CLASS:
             warnings.append(
-                f"'{name}': cuma {len(images)} foto — usahakan minimal "
-                f"{MIN_RECOMMENDED_PER_CLASS} biar model tidak asal hafal."
+                f"'{name}': only {len(images)} photos — aim for at least "
+                f"{MIN_RECOMMENDED_PER_CLASS} so the model does not just memorise."
             )
 
     print("-" * 45)
     print(f"{'TOTAL':<22} {total_all:>6}")
 
     if warnings:
-        print("\nPERINGATAN:")
+        print("\nWARNINGS:")
         for w in warnings:
             print(f"  - {w}")
 
     if total_all > 0:
-        print(f"\nSelesai. Lanjut training:")
+        print(f"\nDone. Continue with training:")
         print(f"  python train_fullness_classifier.py --data_dir {out_dir} --epochs 15")
 
 

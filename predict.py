@@ -1,14 +1,14 @@
 """
 predict.py
 
-Inference script untuk basket fullness classifier yang sudah dilatih
-(hasil dari train_fullness_classifier.py).
+Inference script for the trained basket fullness classifier
+(output of train_fullness_classifier.py).
 
-CARA PAKAI:
-    python predict.py --image path/ke/foto_basket.jpg
-    python predict.py --image path/ke/folder_foto/   (proses semua foto di folder)
+USAGE:
+    python predict.py --image path/to/basket_photo.jpg
+    python predict.py --image path/to/photo_folder/   (process every photo in the folder)
 
-Output: prediksi kelas (empty/light/medium/full) + confidence score per gambar.
+Output: predicted class (empty/light/medium/full/...) + confidence per class for each image.
 """
 
 import argparse
@@ -56,12 +56,12 @@ def predict_single(model, image_path, class_names, device):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=str, required=True,
-                         help="Path ke satu file gambar, atau folder berisi banyak gambar")
+                         help="Path to one image file, or a folder of images")
     args = parser.parse_args()
 
     if not os.path.exists(CLASS_NAMES_PATH):
         raise FileNotFoundError(
-            f"{CLASS_NAMES_PATH} tidak ditemukan. Jalankan train_fullness_classifier.py dulu."
+            f"{CLASS_NAMES_PATH} not found. Run train_fullness_classifier.py first."
         )
     with open(CLASS_NAMES_PATH) as f:
         class_names = [line.strip() for line in f if line.strip()]

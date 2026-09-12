@@ -1,15 +1,15 @@
 """
 fetch_demo_video.py
 
-Unduh 1-3 footage antrian kasir supermarket dari YouTube (via yt-dlp, tanpa
-ffmpeg — pilih stream progresif tunggal <= 480p) ke folder videos/ supaya
-server.py bisa memutarnya sebagai KAMERA VIRTUAL untuk demo /live tanpa
-webcam dan tanpa supermarket sungguhan.
+Download 1-3 supermarket checkout-queue videos from YouTube (via yt-dlp,
+no ffmpeg needed — a single mp4 stream <= 480p is chosen) into videos/ so
+server.py can play them as a VIRTUAL CAMERA for the /live demo without a
+webcam and without a real supermarket.
 
-    python fetch_demo_video.py                 # 2 video, query bawaan
+    python fetch_demo_video.py                 # 2 videos, default queries
     python fetch_demo_video.py --max 3 --query "grocery checkout line overhead"
 
-Folder videos/ di-gitignore (footage pihak ketiga, jangan di-push).
+Note: this is third-party footage; keep it for internal demos.
 """
 
 import argparse
@@ -27,7 +27,7 @@ QUERIES = [
 ]
 MIN_SEC, MAX_SEC = 10, 6 * 60
 MAX_HEIGHT = 480
-# judul harus menyebut konteks toko/kasir supaya hasil search yang nyasar dilewati
+# the title must mention a store/checkout context so off-topic search hits are skipped
 TITLE_RE = re.compile(r"supermarket|grocery|checkout|cashier|store|queue|retail|shopping", re.I)
 
 
@@ -44,9 +44,8 @@ def download(video_id: str, title: str) -> Path | None:
     if out.exists():
         return out
     opts = {
-        # progresif (video+audio dalam satu file) mp4 <= 480p -> tidak perlu ffmpeg
-        # video-only mp4 <= 480p dulu (tidak butuh ffmpeg untuk merge), lalu
-        # fallback progresif 360p (format 18)
+        # video-only mp4 <= 480p first (no ffmpeg needed for merging), then
+        # fall back to progressive 360p (format 18)
         "format": f"bv*[ext=mp4][height<={MAX_HEIGHT}]/18/b[ext=mp4][height<={MAX_HEIGHT}]",
         "outtmpl": str(out),
         "quiet": True, "no_warnings": True, "noplaylist": True,
@@ -56,7 +55,7 @@ def download(video_id: str, title: str) -> Path | None:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
     except Exception as e:
-        print(f"    gagal: {e}")
+        print(f"    failed: {e}")
         return None
     return out if out.exists() else None
 
@@ -64,8 +63,8 @@ def download(video_id: str, title: str) -> Path | None:
 def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--max", type=int, default=2, help="jumlah video (default 2)")
-    ap.add_argument("--query", action="append", help="query tambahan (bisa diulang)")
+    ap.add_argument("--max", type=int, default=2, help="number of videos (default 2)")
+    ap.add_argument("--query", action="append", help="extra search query (repeatable)")
     args = ap.parse_args()
     VIDEOS_DIR.mkdir(exist_ok=True)
 
@@ -78,7 +77,7 @@ def main():
         try:
             entries = search(q, 8)
         except Exception as e:
-            print(f"  search gagal: {e}")
+            print(f"  search failed: {e}")
             continue
         for e in entries:
             if got >= args.max:
@@ -89,12 +88,12 @@ def main():
             if not TITLE_RE.search(e.get("title") or ""):
                 continue
             seen.add(e["id"])
-            print(f"  unduh: {e.get('title', '')[:60]!r} ({dur}s)")
+            print(f"  downloading: {e.get('title', '')[:60]!r} ({dur}s)")
             p = download(e["id"], e.get("title") or e["id"])
             if p:
                 got += 1
                 print(f"    -> {p.name} ({p.stat().st_size // 1024} KB)")
-    print(f"\n{got} video di {VIDEOS_DIR}")
+    print(f"\n{got} video(s) in {VIDEOS_DIR}")
 
 
 if __name__ == "__main__":

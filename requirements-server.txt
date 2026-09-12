@@ -1,9 +1,9 @@
-# Dependensi tambahan untuk server.py (di atas requirements.txt).
+# Extra dependencies for server.py (on top of requirements.txt).
 #   pip install -r requirements-server.txt
-# Tanpa torch/ultralytics server tetap jalan di tier "mock" (demo UI saja).
+# Without torch/ultralytics the server still runs in the "mock" tier (UI demo only).
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 pillow
-opencv-python        # kamera virtual: baca frame dari videos/*.mp4
-yt-dlp               # fetch_demo_video.py (opsional)
+opencv-python        # virtual camera: read frames from videos/*.mp4
+yt-dlp               # fetch_demo_video.py (optional)
