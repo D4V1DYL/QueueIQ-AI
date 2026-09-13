@@ -752,6 +752,9 @@ def main():
     app = create_app(mode=args.mode)
     tier = app.state.store.engine.tier
     print(f"QueueIQ Vision API -> http://{args.host}:{args.port}  (tier={tier})")
+    if app.state.store.engine.load_error:
+        print(f"WARNING: models not loaded, running placeholder detections: "
+              f"{app.state.store.engine.load_error}")
     if os.environ.get("QUEUEIQ_PUBLIC", "").strip().lower() in ("1", "true", "yes"):
         print("WARNING: QUEUEIQ_PUBLIC is set — the private-network guard is disabled. "
               "Only do this behind a reverse proxy that authenticates callers.")

@@ -1,0 +1,12 @@
+# Nixpacks keeps its default Python detection, virtualenv and install step;
+# this file only adds the system libraries OpenCV needs.
+#
+# ultralytics depends on the GUI build of opencv-python and imports cv2 as soon
+# as it is loaded. On a slim Linux image without libGL that import fails, the
+# engine cannot load YOLO, and the server silently falls back to the "mock"
+# tier with placeholder boxes. "..." keeps Nixpacks' own packages.
+[phases.setup]
+aptPkgs = ["...", "libgl1", "libglib2.0-0"]
+
+[start]
+cmd = "python server.py"

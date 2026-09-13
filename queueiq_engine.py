@@ -205,6 +205,24 @@ def assign_baskets(persons, baskets):
     return basket_of, orphans
 
 
+def load_error_hint(e: Exception) -> str:
+    """Turn the usual model-loading failures into the fix, so the dashboard can
+    say what to do instead of just showing a stack-trace fragment."""
+    msg = str(e)
+    if "libGL" in msg or "libgthread" in msg or "libglib" in msg:
+        return (" — OpenCV cannot find a system graphics library. Install libgl1 and "
+                "libglib2.0-0 (apt) or deploy with the repository's nixpacks.toml.")
+    if "No module named 'torch'" in msg or "No module named 'torchvision'" in msg:
+        return " — PyTorch is not installed. pip install -r requirements.txt"
+    if "No module named 'ultralytics'" in msg:
+        return " — Ultralytics is not installed. pip install -r requirements.txt"
+    if "No module named 'cv2'" in msg:
+        return " — OpenCV is not installed. pip install -r requirements-server.txt"
+    if isinstance(e, (FileNotFoundError, OSError)) and ".pt" in msg:
+        return " — a weight file is missing. Run python fetch_models.py --check"
+    return ""
+
+
 def status_for(total_sec: float) -> str:
     if total_sec <= THRESHOLD_GREEN:
         return "green"
@@ -437,7 +455,7 @@ class QueueEngine:
                 self.fullness = HeuristicFullness()
                 self.tier = "heuristic"
         except Exception as e:  # torch/ultralytics missing -> mock
-            self.load_error = f"{type(e).__name__}: {e}"
+            self.load_error = f"{type(e).__name__}: {e}" + load_error_hint(e)
             self.tier = "mock"
             self.yolo = None
             self.fullness = None
@@ -580,6 +598,12 @@ class QueueEngine:
         d.rectangle((0, 0, w, 26), fill=STATUS_RGB[status])
         d.text((8, 6), f"LANE {status.upper()} | {len(dets)} shoppers | ~{total:.0f} s"
                        f" | {self.tier}", fill=(0, 0, 0))
+        if self.tier == "mock":
+            # placeholder boxes must never be mistaken for a real detection
+            h = vis.size[1]
+            d.rectangle((0, h - 30, w, h), fill=(200, 30, 30))
+            d.text((8, h - 22), "NO MODEL LOADED - boxes are random placeholders, not detections",
+                   fill=(255, 255, 255))
         buf = io.BytesIO()
         vis.save(buf, format="JPEG", quality=85)
         return buf.getvalue()

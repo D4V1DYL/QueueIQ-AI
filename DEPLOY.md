@@ -352,8 +352,9 @@ set it when a proxy you control really does set that header.
 
 ## Path D — a PaaS builder (Nixpacks: Coolify, Railway, Dokploy, Render)
 
-Both repositories build with the stock Nixpacks detection, no Dockerfile and no
-`nixpacks.toml`:
+Both repositories build with the stock Nixpacks detection and no Dockerfile.
+`QueueIQ-AI` carries a small `nixpacks.toml` that keeps the default install step
+and only adds the `libgl1` and `libglib2.0-0` system packages:
 
 | Repository | Detected as | Install | Start |
 |---|---|---|---|
@@ -370,8 +371,10 @@ Three things make that work, and all three are already in the repositories:
   so the venv is never created and `pip` is not on the path.
 - **`$PORT` is honoured.** Both services read the port the platform injects and
   bind `0.0.0.0` when it is present, so no start-command override is needed.
-  `requirements-server.txt` uses `opencv-python-headless`, which does not need
-  the `libGL` system library that slim images lack.
+  `ultralytics` itself depends on the GUI build of `opencv-python` and imports
+  `cv2` the moment it loads, so without `libGL` the models never load and the
+  server quietly falls back to placeholder detections. `nixpacks.toml` installs
+  the library; the dashboard now shows the exact load error if it is still missing.
 
 Set these on the API service, since a PaaS reaches it through its own proxy:
 
@@ -454,4 +457,4 @@ laptop-only path needs no network at all.
 | `python fetch_models.py` reports MISSING | The three trained files are not public. Copy them with scp or serve them through `QUEUEIQ_MODELS_URL`. |
 | Nixpacks build fails: `pip: command not found` | A custom `install_command` was set. Nixpacks creates the virtualenv in its own install step, so leave that field empty. |
 | Nixpacks build fails resolving `torch` | An old checkout still pins `torch==…+cu126`. Those wheels exist only on PyTorch's x86 index; pull the current `requirements.txt`. |
-| `ImportError: libGL.so.1` | An old `requirements-server.txt` with `opencv-python`. The current one uses `opencv-python-headless`. |
+| Dashboard says "AI models are not loaded", frames show a red "NO MODEL LOADED" bar | The server is in the mock tier. The warning shows the reason. For `libGL.so.1` install `libgl1 libglib2.0-0` (or build with the repository's `nixpacks.toml`); for `No module named 'torch'` install `requirements.txt` into the interpreter that runs `server.py`. |
