@@ -49,7 +49,8 @@ or open an already-built dashboard once with `?api=https://<owner>-<space-name>.
   Anyone with the URL can use the API.
 - State lives in memory. A restart clears the lanes and the learned model
   parameters; the model warm-starts from synthetic data again.
-- Free Spaces sleep after about 48 hours without visitors and take a minute to
-  wake. Open the Space before a demo.
+- Docker Spaces require a Hugging Face PRO subscription; only static Spaces are
+  free.
+- Idle Spaces sleep and take a minute to wake. Open the Space before a demo.
 
 Built by DM Tech.

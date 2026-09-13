@@ -407,9 +407,14 @@ browser ──HTTPS──> dashboard (Vercel / Railway / Oracle / …)
    └──────HTTPS──> https://<owner>-<space>.hf.space   (this API)
 ```
 
-Free CPU Spaces give 2 vCPU and 16 GB of RAM — far more than the ~360 MB the
-server uses — and Hugging Face terminates HTTPS, so there is no certificate,
-reverse proxy or firewall to configure.
+**This path is not free.** Hugging Face only hosts *static* Spaces for free;
+Docker and Gradio Spaces require a PRO subscription ($9/month at the time of
+writing), even on the basic CPU hardware. Without PRO, `publish_space.py` stops
+at "402 Payment Required" and nothing is uploaded or charged.
+
+With PRO, the basic CPU hardware gives 2 vCPU and 16 GB of RAM — far more than
+the ~360 MB the server uses — and Hugging Face terminates HTTPS, so there is no
+certificate, reverse proxy or firewall to configure.
 
 ### E1. Publish the API
 
@@ -461,7 +466,7 @@ the Space once per browser with `?api=https://<owner>-<space>.hf.space`.
 - **Nothing persists.** Lanes and the learned model parameters live in memory
   and in the container's filesystem; a restart or rebuild resets them, and the
   model warm-starts from the synthetic data again.
-- **Free Spaces sleep** after about 48 hours without traffic and take roughly a
+- **Idle Spaces sleep** after a period without traffic and take roughly a
   minute to wake. Open `/health` before a demo.
 - **The container runs `QUEUEIQ_PUBLIC=1` and `QUEUEIQ_TRUST_PROXY=1`** (set in
   the Dockerfile), because Hugging Face's proxy is the only way in.
@@ -531,6 +536,8 @@ laptop-only path needs no network at all.
 | Public deployment: nothing answers on 443 | Two firewalls. Check the OCI security list **and** `firewall-cmd --list-all` / `iptables -L INPUT` on the instance. |
 | Space build finished but `/health` says `mock` | Open the Space's logs: the startup line prints the load error. The Dockerfile installs `libgl1`; if you changed the base image, keep that step. |
 | Hosted dashboard shows "Vision server not reachable" | It was built without `VITE_QUEUEIQ_API`, or the Space is private or asleep. Rebuild with the variable, make the Space public, and open `/health` once to wake it. |
+| `publish_space.py` fails with `402 Payment Required` | Docker Spaces need a Hugging Face PRO subscription; only static Spaces are free. Subscribe, or use Path A/B (laptop) or Path C (Oracle) instead. Nothing was uploaded. |
+| `huggingface_hub` login says `Invalid user token` after a `400 Bad Request` | The token was not pasted: in the hidden Windows prompt Ctrl+V types a control character. A wrong token returns 401 instead. Load it from the clipboard: `$env:HF_TOKEN = (Get-Clipboard).Trim()` |
 | `python fetch_models.py` reports MISSING | The three trained files are not public. Copy them with scp or serve them through `QUEUEIQ_MODELS_URL`. |
 | Nixpacks build fails: `pip: command not found` | A custom `install_command` was set. Nixpacks creates the virtualenv in its own install step, so leave that field empty. |
 | Nixpacks build fails resolving `torch` | An old checkout still pins `torch==…+cu126`. Those wheels exist only on PyTorch's x86 index; pull the current `requirements.txt`. |
