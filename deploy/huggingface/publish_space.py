@@ -6,11 +6,13 @@ it. Only what the server needs at runtime is sent — no dataset, notebooks or
 training scripts — and the model weights go through the Hub's large-file
 storage automatically, so Git LFS does not have to be set up by hand.
 
-Log in once (the token needs "write" access), then publish:
+Use the same Python for all three commands, and log in once with a token that
+has "write" access (huggingface.co/settings/tokens). The script can be run from
+any folder:
 
-    pip install huggingface_hub
-    huggingface-cli login
-    python deploy/huggingface/publish_space.py --space <owner>/queueiq-api
+    python -m pip install huggingface_hub
+    python -c "from huggingface_hub import login; login()"
+    python D:/QueueIQ/QueueIQ-AI/deploy/huggingface/publish_space.py --space <owner>/queueiq-api
 
 Check what would be uploaded without touching the Hub:
 
@@ -73,6 +75,34 @@ def stage(dest: Path, include_videos: bool) -> list[tuple[str, int]]:
     return listing
 
 
+def preflight() -> None:
+    """Fail before staging anything when an upload cannot possibly work, and say
+    exactly what to run - with the interpreter that is actually running, since
+    the usual cause is a second Python on PATH without huggingface_hub."""
+    py = f'"{sys.executable}"'
+    nl = chr(10)
+    try:
+        from huggingface_hub import get_token
+    except ImportError:
+        sys.exit(nl.join([
+            "huggingface_hub is not installed for this Python:",
+            f"  {sys.executable}",
+            "",
+            "Install it for this interpreter, or run the script with the Python that already has it:",
+            f"  {py} -m pip install huggingface_hub",
+        ]))
+    if not get_token():
+        sys.exit(nl.join([
+            "Not logged in to Hugging Face.",
+            "",
+            "Create a token with WRITE access at https://huggingface.co/settings/tokens,",
+            "then log in once with this same Python (paste the token when asked):",
+            f'  {py} -c "from huggingface_hub import login; login()"',
+            "",
+            "Then run this script again.",
+        ]))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Publish the QueueIQ Vision API to a Hugging Face Space")
     ap.add_argument("--space", required=True, help="<owner>/<space-name>, e.g. dmtech/queueiq-api")
@@ -83,6 +113,9 @@ def main() -> int:
 
     if "/" not in args.space:
         sys.exit("--space must look like <owner>/<space-name>")
+
+    if not args.dry_run:
+        preflight()
 
     with tempfile.TemporaryDirectory(prefix="queueiq-space-") as tmp:
         listing = stage(Path(tmp), args.include_videos)
