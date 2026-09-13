@@ -1,11 +1,14 @@
 # Extra dependencies for server.py (on top of requirements.txt).
 #   pip install -r requirements-server.txt
 # Without torch/ultralytics the server still runs in the "mock" tier (UI demo only).
+#
+# OpenCV is deliberately not listed: ultralytics already installs opencv-python,
+# and adding opencv-python-headless next to it puts two packages into the same
+# cv2 folder. On slim Linux images opencv-python needs the libgl1 and
+# libglib2.0-0 system packages - nixpacks.toml and the Hugging Face Dockerfile
+# install them.
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 pillow
-# headless: the virtual camera only decodes frames, and the GUI build would drag
-# in libGL, which slim server images do not have
-opencv-python-headless
 yt-dlp               # fetch_demo_video.py (optional)

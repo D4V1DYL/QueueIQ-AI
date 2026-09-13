@@ -396,6 +396,78 @@ rather keep them out of the image.
 
 ---
 
+## Path E — Hugging Face Spaces (API) + a hosted dashboard
+
+The simplest public setup: the Vision API runs as a free Hugging Face Space and
+the dashboard is hosted anywhere that serves a Node app over HTTPS, calling the
+Space from the browser.
+
+```
+browser ──HTTPS──> dashboard (Vercel / Railway / Oracle / …)
+   └──────HTTPS──> https://<owner>-<space>.hf.space   (this API)
+```
+
+Free CPU Spaces give 2 vCPU and 16 GB of RAM — far more than the ~360 MB the
+server uses — and Hugging Face terminates HTTPS, so there is no certificate,
+reverse proxy or firewall to configure.
+
+### E1. Publish the API
+
+Create a write token at huggingface.co → Settings → Access Tokens, then:
+
+```bash
+cd QueueIQ-AI
+pip install huggingface_hub
+huggingface-cli login
+python deploy/huggingface/publish_space.py --space <owner>/queueiq-api --dry-run   # review the file list
+python deploy/huggingface/publish_space.py --space <owner>/queueiq-api
+```
+
+The script creates the Space (Docker SDK) if it does not exist and uploads only
+what the server needs — code, weights, the sample frame, `Dockerfile` and the
+Space card from `deploy/huggingface/` — about 46 MB. Large weights go through the
+Hub's file storage automatically; no Git LFS setup is required.
+
+The first build takes several minutes (PyTorch CPU wheels). Follow it on the
+Space page, then confirm:
+
+```bash
+curl https://<owner>-<space>.hf.space/health      # "tier": "full"
+```
+
+The two demo videos are third-party footage and are **not** uploaded by default,
+because a public Space lets anyone download them. Add `--include-videos` only if
+you accept that; otherwise the dashboard's sample-footage list is simply empty.
+
+### E2. Point the dashboard at the Space
+
+Bake the Space URL into the build:
+
+```bash
+cd QueueIQ-FE
+VITE_QUEUEIQ_API=https://<owner>-<space>.hf.space npm run build
+npm start
+```
+
+On Vercel, Railway or similar, set `VITE_QUEUEIQ_API` as a build-time
+environment variable instead. An already-built dashboard can also be pointed at
+the Space once per browser with `?api=https://<owner>-<space>.hf.space`.
+
+### What differs from the LAN setup
+
+- **The Space must be public.** The dashboard's live stream (`EventSource`)
+  cannot send an access token, so a private Space refuses the browser. Anyone
+  with the URL can call the API and spend its CPU.
+- **Nothing persists.** Lanes and the learned model parameters live in memory
+  and in the container's filesystem; a restart or rebuild resets them, and the
+  model warm-starts from the synthetic data again.
+- **Free Spaces sleep** after about 48 hours without traffic and take roughly a
+  minute to wake. Open `/health` before a demo.
+- **The container runs `QUEUEIQ_PUBLIC=1` and `QUEUEIQ_TRUST_PROXY=1`** (set in
+  the Dockerfile), because Hugging Face's proxy is the only way in.
+
+---
+
 ## Configuration reference
 
 | Variable | Default | Meaning |
@@ -411,9 +483,12 @@ rather keep them out of the image.
 | `QUEUEIQ_MODELS_URL` | unset | Base URL `fetch_models.py` downloads the trained weights from |
 | `PORT` | unset | PaaS convention; when set, the server uses it and binds `0.0.0.0` |
 | `YOLO_OFFLINE` | set to `1` by `server.py` | Stops Ultralytics contacting the network |
+| `VITE_QUEUEIQ_API` | unset | **Dashboard, build time.** API base URL baked into the bundle, e.g. the Hugging Face Space |
 
-The dashboard has no build-time configuration. The API address comes from the
-page host, the `?api=` parameter, or the reconnect panel.
+The dashboard reads one build-time variable, `VITE_QUEUEIQ_API` (or
+`NEXT_PUBLIC_QUEUEIQ_API`), used when the API lives on another host such as a
+Hugging Face Space. Otherwise the API address comes from the `?api=` parameter,
+the reconnect panel, or the host that served the page.
 
 ---
 
@@ -454,6 +529,8 @@ laptop-only path needs no network at all.
 | Public deployment: every request is `403 LAN-only` | `QUEUEIQ_PUBLIC=1` is not set on the service. |
 | Public deployment: page loads, lanes never update | The proxy is buffering Server-Sent Events. Caddy needs `flush_interval -1`, nginx needs `proxy_buffering off`. |
 | Public deployment: nothing answers on 443 | Two firewalls. Check the OCI security list **and** `firewall-cmd --list-all` / `iptables -L INPUT` on the instance. |
+| Space build finished but `/health` says `mock` | Open the Space's logs: the startup line prints the load error. The Dockerfile installs `libgl1`; if you changed the base image, keep that step. |
+| Hosted dashboard shows "Vision server not reachable" | It was built without `VITE_QUEUEIQ_API`, or the Space is private or asleep. Rebuild with the variable, make the Space public, and open `/health` once to wake it. |
 | `python fetch_models.py` reports MISSING | The three trained files are not public. Copy them with scp or serve them through `QUEUEIQ_MODELS_URL`. |
 | Nixpacks build fails: `pip: command not found` | A custom `install_command` was set. Nixpacks creates the virtualenv in its own install step, so leave that field empty. |
 | Nixpacks build fails resolving `torch` | An old checkout still pins `torch==…+cu126`. Those wheels exist only on PyTorch's x86 index; pull the current `requirements.txt`. |

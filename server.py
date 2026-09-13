@@ -494,6 +494,13 @@ def create_app(mode: str = "auto") -> FastAPI:
                 "reach this port can drive the demo and spend CPU on inference — put "
                 "authentication in front of it (see DEPLOY.md).", kind="system")
 
+    # ---------------- root ----------------
+    @app.get("/")
+    async def root():
+        return {"service": "QueueIQ Vision API", "version": VERSION, "vendor": VENDOR,
+                "tier": engine.tier, "health": "/health", "docs": "/docs",
+                "dashboard": "Point QueueIQ-FE at this URL (VITE_QUEUEIQ_API or ?api=)."}
+
     # ---------------- health ----------------
     @app.get("/health")
     async def health():
