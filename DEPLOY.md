@@ -146,7 +146,7 @@ Three things have to be arranged, in this order.
 
 | Shape | Verdict |
 |---|---|
-| Ampere A1 (VM.Standard.A1.Flex, ARM, free tier up to 4 OCPU / 24 GB) | **Recommended.** PyTorch ships aarch64 wheels; plenty of headroom. |
+| Ampere A1 (VM.Standard.A1.Flex, ARM, Always Free: 2 OCPU / 12 GB total) | **Recommended.** PyTorch ships aarch64 wheels; plenty of headroom for a ~360 MB server. |
 | VM.Standard.E2.1.Micro (AMD, free tier, 1 GB RAM) | Tight but workable. The server measured **359 MB resident** after inference on this project's models. Add 1–2 GB of swap; a build or a second process will otherwise get killed. |
 
 Disk: PyTorch alone unpacks to about **1.2 GB**, plus roughly 46 MB of weights.
